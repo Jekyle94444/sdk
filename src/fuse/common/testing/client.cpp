@@ -2,22 +2,21 @@
 #include <future>
 #include <mutex>
 
-#include <mega/fuse/common/bind_handle.h>
+#include <mega/common/error_or.h>
+#include <mega/common/node_info.h>
+#include <mega/common/normalized_path.h>
+#include <mega/common/normalized_path.h>
+#include <mega/common/upload.h>
+#include <mega/common/utility.h>
 #include <mega/fuse/common/client.h>
-#include <mega/fuse/common/error_or.h>
 #include <mega/fuse/common/inode_info.h>
 #include <mega/fuse/common/logging.h>
 #include <mega/fuse/common/mount_event.h>
 #include <mega/fuse/common/mount_info.h>
-#include <mega/fuse/common/node_info.h>
-#include <mega/fuse/common/normalized_path.h>
-#include <mega/fuse/common/normalized_path.h>
 #include <mega/fuse/common/service.h>
 #include <mega/fuse/common/testing/client.h>
 #include <mega/fuse/common/testing/cloud_path.h>
 #include <mega/fuse/common/testing/mount_event_observer.h>
-#include <mega/fuse/common/upload.h>
-#include <mega/fuse/common/utility.h>
 
 #include <tests/integration/test.h>
 #include <tests/integration/env_var_accounts.h>
@@ -28,6 +27,8 @@ namespace fuse
 {
 namespace testing
 {
+
+using namespace common;
 
 class Client::Uploader
 {
@@ -317,7 +318,14 @@ MountResult Client::discard(bool discard)
 
 MountResult Client::enableMount(const std::string& name, bool remember)
 {
-    return service().enable(name, remember);
+    const auto ret = service().enable(name, remember);
+    // Tell FUSE mount that we need to access mount
+    if (const auto flags = service().flags(name); flags)
+    {
+        flags->mAllowSelfAccess = true;
+        service().flags(name, *flags);
+    }
+    return ret;
 }
 
 Task Client::execute(std::function<void(const Task&)> function)

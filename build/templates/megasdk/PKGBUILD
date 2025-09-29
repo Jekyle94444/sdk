@@ -77,6 +77,6 @@ package() {
 	cd "$pkgname-$pkgver"
 	megasrcdir="${srcdir}/${pkgname}-${pkgver}"
 	megabuilddir="${megasrcdir}/build_dir"
-
+	
 	cmake --install "${megabuilddir}" --prefix $pkgdir
 }

@@ -1,25 +1,27 @@
 #include <cstring>
 
+#include <mega/common/error_or.h>
+#include <mega/common/node_info.h>
 #include <mega/fuse/common/client.h>
 #include <mega/fuse/common/directory_inode.h>
-#include <mega/fuse/common/error_or.h>
 #include <mega/fuse/common/file_inode.h>
 #include <mega/fuse/common/file_open_flag.h>
+#include <mega/fuse/common/inode.h>
 #include <mega/fuse/common/inode_id.h>
 #include <mega/fuse/common/inode_info.h>
-#include <mega/fuse/common/inode.h>
 #include <mega/fuse/common/logging.h>
+#include <mega/fuse/common/mount_event.h>
+#include <mega/fuse/common/mount_event_type.h>
 #include <mega/fuse/common/mount_inode_id.h>
 #include <mega/fuse/common/mount_result.h>
-#include <mega/fuse/common/node_info.h>
 #include <mega/fuse/common/ref.h>
 #include <mega/fuse/platform/context.h>
 #include <mega/fuse/platform/date_time.h>
 #include <mega/fuse/platform/directory_context.h>
 #include <mega/fuse/platform/file_context.h>
 #include <mega/fuse/platform/library.h>
-#include <mega/fuse/platform/mount_db.h>
 #include <mega/fuse/platform/mount.h>
+#include <mega/fuse/platform/mount_db.h>
 #include <mega/fuse/platform/path_adapter.h>
 #include <mega/fuse/platform/service_context.h>
 #include <mega/fuse/platform/utility.h>
@@ -32,6 +34,26 @@ namespace fuse
 {
 namespace platform
 {
+
+using namespace common;
+
+static bool newAttributeIsAllowed(UINT32 newValue, UINT32 currentValue)
+{
+    // What attributes are allowed to change
+    // https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-setfileattributesa
+    // We excludes FILE_ATTRIBUTE_OFFLINE as it apprently doesn't apply
+    constexpr UINT32 allowed = FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN |
+                               FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED |
+                               FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_SYSTEM |
+                               FILE_ATTRIBUTE_TEMPORARY;
+
+    // What bits is changed
+    const UINT32 changed = newValue ^ currentValue;
+
+    // Nothing is changed or changed bits are allowed
+    // Below is equal as changed == 0 || (changed & allowed) == changed)
+    return (changed & allowed) == changed;
+}
 
 NTSTATUS Mount::canDelete(PVOID context)
 {
@@ -116,6 +138,10 @@ NTSTATUS Mount::create(const std::wstring& path,
                        PVOID& context,
                        FSP_FSCTL_FILE_INFO& info)
 {
+    // Reject if the originating process is self
+    if (isSelfForbidden())
+        return STATUS_ACCESS_DENIED;
+
     // Try and locate the specified node.
     auto name   = std::string();
     auto result = inodeDB().lookup(PathAdapter(path), handle(), &name);
@@ -318,6 +344,10 @@ NTSTATUS Mount::getSecurityByName(const std::wstring& path,
                                   PSECURITY_DESCRIPTOR descriptor,
                                   SIZE_T* descriptorLength)
 {
+    // Reject if the originating process is self
+    if (isSelfForbidden())
+        return STATUS_ACCESS_DENIED;
+
     // Try and locate the specified inode.
     auto result = inodeDB().lookup(PathAdapter(path), handle());
 
@@ -354,16 +384,21 @@ NTSTATUS Mount::getVolumeInfo(FSP_FSCTL_VOLUME_INFO& info)
     if (!storageInfo)
         return STATUS_UNSUCCESSFUL;
 
+    // How long can a mount's name be?
+    constexpr auto maxLength = sizeof(info.VolumeLabel) / sizeof(WCHAR);
+
     // Get our hands on the mount's name.
     auto name = toWideString(this->name());
+
+    // Truncate the name as necessary.
+    name.resize(std::min(maxLength, name.size()));
 
     // Populate usage statistics.
     info.FreeSize = static_cast<UINT64>(storageInfo->mAvailable);
     info.TotalSize = static_cast<UINT64>(storageInfo->mCapacity);
 
     // Populate volume label.
-    info.VolumeLabelLength =
-      static_cast<UINT16>(name.size() * sizeof(wchar_t));
+    info.VolumeLabelLength = static_cast<UINT16>(name.size());
 
     std::memcpy(info.VolumeLabel, name.c_str(), info.VolumeLabelLength);
 
@@ -382,6 +417,10 @@ NTSTATUS Mount::open(const std::wstring& path,
                      PVOID& context,
                      FSP_FSCTL_FILE_INFO& info)
 {
+    // Reject if the originating process is self
+    if (isSelfForbidden())
+        return STATUS_ACCESS_DENIED;
+
     // Try and locate the specified inode.
     auto result = inodeDB().lookup(PathAdapter(path), handle());
 
@@ -563,6 +602,15 @@ NTSTATUS Mount::readDirectory(PVOID context,
         response->Size = sizeof(*response);
         response->IoStatus.Information = static_cast<UINT32>(numWritten);
 
+        // Notify File Explorer
+        //
+        // NOTE: This is called here (after directory entries are read) because:
+        // - It ensures the folder is actually opened before notification.
+        // - Placing this in open() (for both files and directories, it has timing
+        //   problem if only called for openning directories) increases CPU usage (~2%+)
+        //   when opening large folders, so this is more efficient.
+        mMountDB.notifyFileExplorerSetter();
+
         // Send response to caller.
         mDispatcher.reply(*response, STATUS_SUCCESS);
     }; // read
@@ -653,8 +701,8 @@ NTSTATUS Mount::setBasicInfo(PVOID context,
         if (!attributes)
             attributes = FILE_ATTRIBUTE_NORMAL;
 
-        // Caller isn't allowed to change attributes.
-        if (attributes != info.FileAttributes)
+        // Deny if any change isn't in allowed
+        if (!newAttributeIsAllowed(attributes, info.FileAttributes))
             return STATUS_ACCESS_DENIED;
     }
 
@@ -826,14 +874,37 @@ NTSTATUS Mount::write(PVOID context,
     return STATUS_PENDING;
 }
 
+// Check if the request's originating process is this process and forbidden
+// Don't allow SDK to access the mount if the request is from itself as it will have deadlock issues
+// due to single-threaded execution loop of the SDK.
+//
+// @return true is self and is forbidden, otherwise false
+//
+// Note: FspFileSystemOperationProcessId only provides valid information for
+// getSecurityByName, open, and create operations. This may change in future
+// versions of the FSP
+bool Mount::isSelfForbidden() const
+{
+    if (allowSelfAccess())
+        return false;
+
+    const auto originatingPid = FspFileSystemOperationProcessId();
+    assert(originatingPid);
+
+    return originatingPid != 0 && GetCurrentProcessId() == originatingPid;
+}
+
 Mount::Mount(const MountInfo& info,
              MountDB& mountDB)
   : fuse::Mount(info, mountDB)
   , mActivities()
   , mDispatcher(*this, info.mPath)
-  , mExecutor(mountDB.executorFlags())
+  , mExecutor(mountDB.executorFlags(), logger())
 {
     mDispatcher.start(info.mPath);
+
+    // Let observers know the mount's functional.
+    enabled();
 
     FUSEDebugF("Mount constructed: %s",
                path().toPath(false).c_str());

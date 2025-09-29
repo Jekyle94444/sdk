@@ -6,7 +6,7 @@ String uploadFileToGitLab(String fileName, String projectId) {
     String link = ""
     String response = ""
     withCredentials([string(credentialsId: 'gitlab-api-token', variable: 'TOKEN')]) {
-        response = sh(script: "curl -s --request POST --header 'PRIVATE-TOKEN:$TOKEN' --form file=@${fileName} ${env.GITLAB_BASE_URL}/api/v4/projects/${projectId}/uploads", returnStdout: true).trim()
+        response = sh(script: "curl -s --request POST --header 'PRIVATE-TOKEN:\$TOKEN' --form file=@${fileName} ${env.GITLAB_BASE_URL}/api/v4/projects/${projectId}/uploads", returnStdout: true).trim()
     }
     link = new JsonSlurperClassic().parseText(response).markdown
     echo "Logs uploaded to: ${link}"
@@ -16,7 +16,7 @@ String uploadFileToGitLab(String fileName, String projectId) {
 // Downloads the console log from this Jenkins build
 void downloadJenkinsConsoleLog(String fileName) {
     withCredentials([usernameColonPassword(credentialsId: 'jenkins-ro', variable: 'CREDENTIALS')]) {
-        sh "curl -u '${CREDENTIALS}' ${BUILD_URL}consoleText -o ${fileName}"
+        sh "curl -u \"\${CREDENTIALS}\" ${BUILD_URL}consoleText -o ${fileName}"
     }
 }
 
@@ -129,6 +129,14 @@ pipeline {
                                 [$class: "UserIdentity",name: "jenkins", email: "jenkins@jenkins"]
                                 ]
                         ])
+                        withCredentials([gitUsernamePassword(credentialsId: 'jenkins_sdk_token_with_user', gitToolName: 'Default')]) {
+                            sh "git submodule update --init --recursive"
+                        }
+                        script{
+                            ios_sources_workspace = WORKSPACE
+                            sdk_sources_workspace = "${ios_sources_workspace}/Modules/DataSource/MEGASDK/Sources/MEGASDK"
+                            megachat_sources_workspace = "${ios_sources_workspace}/Modules/DataSource/MEGAChatSDK/Sources/MEGAChatSDK"
+                        }
                         dir('Modules/DataSource/MEGAChatSDK/Sources/MEGAChatSDK'){
 
                             //Clone MEGAchat
@@ -154,19 +162,8 @@ pipeline {
                                     ]
                             ])
                         }
-                        sh "git submodule update --init iMEGA/Vendor/SVProgressHUD"
-                        sh "git submodule update --init iMEGA/Vendor/LTHPasscodeViewController"
-                        withCredentials([gitUsernamePassword(credentialsId: 'jenkins_sdk_token_with_user', gitToolName: 'Default')]) {
-                            sh "git submodule update --init Modules/MEGASharedRepo"
-                        }
-                        script{
-                            ios_sources_workspace = WORKSPACE
-                            sdk_sources_workspace = "${ios_sources_workspace}/Modules/DataSource/MEGASDK/Sources/MEGASDK"
-                            megachat_sources_workspace = "${ios_sources_workspace}/Modules/DataSource/MEGAChatSDK/Sources/MEGAChatSDK"
-                        }
                     }
                 }
-
                 stage('Build SDK and iOS'){
                     environment {
                         PATH = "/usr/local/bin:${env.PATH}"

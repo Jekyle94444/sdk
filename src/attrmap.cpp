@@ -173,6 +173,17 @@ bool AttrMap::hasDifferentValue(nameid attrId, const attr_map& otherAttrs) const
            (curIt != map.end() && otherIt != otherAttrs.end() && curIt->second != otherIt->second); // have different values
 }
 
+void AttrMap::removeEmptyValues()
+{
+    for (auto it = map.begin(); it != map.end();)
+    {
+        if (it->second.empty())
+            it = map.erase(it);
+        else
+            ++it;
+    }
+}
+
 void AttrMap::applyUpdates(const attr_map& updates)
 {
     for (auto& u : updates)
@@ -269,11 +280,55 @@ void AttrMap::getjson(string* s) const
     }
 }
 
+std::string AttrMap::getJsonObject() const
+{
+    std::string result{"{"};
+    for (auto [k, v]: map)
+    {
+        result += "\"" + nameid2string(k) + "\":\"" + v + "\",";
+    }
+
+    result.pop_back();
+    if (!map.empty())
+    {
+        result.append("}");
+    }
+    return result;
+}
+
 std::string AttrMap::getjson() const
 {
     std::string result;
     getjson(&result);
     return result;
+}
+
+void AttrMap::fromjsonObject(const std::string& buf)
+{
+    map.clear();
+    JSON json;
+    json.begin(buf.c_str());
+
+    if (!json.enterobject())
+    {
+        return;
+    }
+
+    nameid name;
+    while ((name = json.getnameid()) != EOO)
+    {
+        if (!json.storeobject(&map[name]))
+        {
+            map.clear();
+            return;
+        }
+    }
+
+    if (!json.leaveobject())
+    {
+        map.clear();
+        return;
+    }
 }
 
 void AttrMap::fromjson(const char* buf)
@@ -289,6 +344,52 @@ void AttrMap::fromjson(const char* buf)
     {
         JSON::unescape(t);
     }
+}
+
+std::optional<AttrMap> AttrMap::getComplexNestedJsonObject(const std::string_view parentName,
+                                                           const std::string_view childName) const
+{
+    const auto parentId = AttrMap::string2nameid(parentName);
+    const auto it = map.find(parentId);
+    if (it == std::end(map))
+        return std::nullopt;
+
+    const char* buf = it->second.c_str();
+    const char* end = buf + it->second.size();
+
+    AttrMap aux;
+    JSON json;
+    json.begin(buf);
+    nameid name;
+    auto childId = AttrMap::string2nameid(childName);
+    bool found = false;
+
+    while (!found && (name = json.getnameid()) != EOO)
+    {
+        if (name != childId)
+        {
+            std::string auxConsum;
+            json.storeobject(&auxConsum);
+            continue;
+        }
+
+        found = true;
+        const char* auxbuf = json.pos;
+        while (auxbuf < end && *auxbuf != '}')
+        {
+            aux.map[name] += *auxbuf++;
+        }
+
+        if (auxbuf == end)
+        {
+            aux.map.clear(); // unexpected format
+        }
+        else
+        {
+            aux.map[name] += '}';
+        }
+    }
+    return aux.map.empty() ? std::optional<AttrMap>{std::nullopt} : aux;
 }
 
 std::optional<AttrMap> AttrMap::getNestedJsonObject(const std::string_view name) const

@@ -40,6 +40,7 @@ string gLogName = getDefaultLogName();
 bool gResumeSessions = false;
 bool gScanOnly = false; // will be used in SRW
 bool gManualVerification=false;
+bool gFreeAccounts = false; // force accounts used in tests to remain free level after finishing
 
 std::string USER_AGENT = "Integration Tests with GoogleTest framework";
 
@@ -475,6 +476,10 @@ public:
             {
                 gScanOnly = true;
             }
+            else if (arg == "--FREEACCOUNTS")
+            {
+                gFreeAccounts = true;
+            }
 
             ++it;
         }
@@ -487,6 +492,11 @@ protected:
         cout << buildAlignedHelpString("--CI",             {"Include all 'Continuous Integration' options (same as --LOG)"}) << '\n';
         cout << buildAlignedHelpString("--RESUMESESSIONS", {"Resume previous account sessions, instead of full logins"}) << '\n';
         cout << buildAlignedHelpString("--SCANONLY",       {"Scan synced folders periodically instead of use file system notifications"}) << '\n';
+        cout
+            << buildAlignedHelpString(
+                   "--FREEACCOUNTS",
+                   {"Test accounts used will remain at free account level at the end of the tests"})
+            << '\n';
     }
 
     void printCustomEnvVars() const override
@@ -575,9 +585,10 @@ int main (int argc, char *argv[])
     {
         // Don't run tests, only manage subprocesses.
         // To get here run with --INSTANCES:2 [--EMAIL-POOL:foo+bar-{1-28}@mega.nz]
-        // If --EMAIL-POOL runtime arg is missing, email template will be taken from MEGA_EMAIL env var.
+        // If --EMAIL-POOL runtime arg is missing, email template will be taken from MEGA_EMAIL.
         // Password for all emails built from template will be taken from MEGA_PWD env var.
-        // If it did not get an email template, it'll use 1 single subprocess with the existing env vars.
+        // If it did not get an email template, it'll use a single subprocess with the existing env
+        // vars.
         GTestParallelRunner pr(std::move(argVals));
         string testBase = (TestFS::GetBaseFolder() / "pid_").u8string(); // see TestFS::GetProcessFolder()
         pr.useWorkerOutputPathForPid(std::move(testBase));
@@ -615,7 +626,7 @@ int main (int argc, char *argv[])
 
     sdk_test::setTestDataDir(fs::absolute(fs::path(argv[0]).parent_path()));
 
-    SimpleLogger::setLogLevel(logMax);
+    SimpleLogger::setLogLevel(logVerbose);
     SimpleLogger::setOutputClass(&megaLogger);
 
     // delete old test folders, created during previous runs

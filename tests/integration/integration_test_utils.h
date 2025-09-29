@@ -21,7 +21,8 @@
 
 namespace sdk_test
 {
-
+using namespace std::chrono_literals;
+static constexpr auto MAX_TIMEOUT = 3min; // Timeout for operations in this file
 #ifdef ENABLE_SYNC
 
 /**
@@ -48,6 +49,11 @@ std::unique_ptr<::mega::MegaSync> waitForSyncState(::mega::MegaApi* megaApi,
                                                    ::mega::handle backupID,
                                                    ::mega::MegaSync::SyncRunningState runState,
                                                    ::mega::MegaSync::Error err);
+
+/**
+ * @brief Waits for the sync stall state to be set certain amount of time (10 seconds).
+ */
+bool waitForSyncStallState(::mega::MegaApi* const megaApi);
 
 /**
  * @brief Synchronously start a TWO_WAY sync between the given local path and the remote node with
@@ -116,6 +122,11 @@ bool suspendSync(::mega::MegaApi* megaApi, const ::mega::handle backupID);
 bool disableSync(::mega::MegaApi* megaApi, const ::mega::handle backupID);
 
 /**
+ * @brief Check MegaApi flags for sync stall state.
+ */
+bool isSyncStalled(::mega::MegaApi* const megaApi);
+
+/**
  * @brief Get a vector with all the reported stalls.
  */
 std::vector<std::unique_ptr<::mega::MegaSyncStall>> getStalls(::mega::MegaApi* megaApi);
@@ -160,6 +171,27 @@ bool checkAndExpectThat(const T& value, const MatcherT& matcher)
 }
 
 /**
+ * @brief Downloads a file from MEGA
+ * @see MegaApi::startDownload for more details
+ * @return a Numeric errCode corresponding to MegaError received at
+ * MegaTransferListener::onTransferFinish, or nullopt if onTransferFinish is never called.
+ * Note: If onTransferFinish is called but MegaError is not valid API_EINTERNAL will be returned.
+ */
+std::optional<int> downloadNode(
+    ::mega::MegaApi* megaApi,
+    ::mega::MegaNode* node,
+    const std::filesystem::path& fsPath,
+    bool pathIsFolder,
+    const std::chrono::seconds timeoutInSecs = MAX_TIMEOUT,
+    const int collisionCheck = ::mega::MegaTransfer::COLLISION_CHECK_FINGERPRINT,
+    const int collisionResolution = ::mega::MegaTransfer::COLLISION_RESOLUTION_NEW_WITH_N,
+    const char* customName = nullptr,
+    const char* appData = nullptr,
+    const bool startFirst = false,
+    ::mega::MegaCancelToken* cancelToken = nullptr,
+    const bool undelete = false);
+
+/**
  * @brief Uploads the file in the given path to the given parentNode.
  */
 std::unique_ptr<::mega::MegaNode> uploadFile(::mega::MegaApi* megaApi,
@@ -177,6 +209,11 @@ std::unique_ptr<::mega::MegaNode> uploadFile(::mega::MegaApi* megaApi,
                                   const std::string& name,
                                   const ::mega::MegaNode::PasswordNodeData* data,
                                   const ::mega::handle parentNodeHandle);
+
+::mega::handle createCreditCardNode(::mega::MegaApi* megaApi,
+                                    const std::string& name,
+                                    const ::mega::MegaNode::CreditCardNodeData* data,
+                                    const ::mega::handle parentNodeHandle);
 }
 
 #endif // INCLUDE_INTEGRATION_INTEGRATION_TEST_UTILS_H_

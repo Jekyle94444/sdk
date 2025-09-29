@@ -27,6 +27,7 @@
 #include "mega/mega_utf8proc.h"
 #include "mega/megaclient.h"
 #include "mega/serialize64.h"
+#include "mega/testhooks.h"
 
 #include <cctype>
 #include <iomanip>
@@ -181,18 +182,20 @@ string backupTypeToStr(BackupType type)
 void AddHiddenFileAttribute([[maybe_unused]] mega::LocalPath& path)
 {
 #ifdef _WIN32
+    auto pathStr{path.asPlatformEncoded(false)};
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (GetFileAttributesExW(path.localpath.data(), GetFileExInfoStandard, &fad))
-        SetFileAttributesW(path.localpath.data(), fad.dwFileAttributes | FILE_ATTRIBUTE_HIDDEN);
+    if (GetFileAttributesExW(pathStr.data(), GetFileExInfoStandard, &fad))
+        SetFileAttributesW(pathStr.data(), fad.dwFileAttributes | FILE_ATTRIBUTE_HIDDEN);
 #endif
 }
 
 void RemoveHiddenFileAttribute([[maybe_unused]] mega::LocalPath& path)
 {
 #ifdef _WIN32
+    auto pathStr{path.asPlatformEncoded(false)};
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (GetFileAttributesExW(path.localpath.data(), GetFileExInfoStandard, &fad))
-        SetFileAttributesW(path.localpath.data(), fad.dwFileAttributes & ~FILE_ATTRIBUTE_HIDDEN);
+    if (GetFileAttributesExW(pathStr.data(), GetFileExInfoStandard, &fad))
+        SetFileAttributesW(pathStr.data(), fad.dwFileAttributes & ~FILE_ATTRIBUTE_HIDDEN);
 #endif
 }
 
@@ -224,6 +227,13 @@ void CacheableWriter::serializepstr(const string* field)
     unsigned short ll = (unsigned short)(field ? field->size() : 0);
     dest.append((char*)&ll, sizeof(ll));
     if (field) dest.append(field->data(), ll);
+}
+
+void CacheableWriter::serializestring(const std::wstring& field)
+{
+    const unsigned short ll = static_cast<unsigned short>(field.size() * sizeof(wchar_t));
+    dest.append(reinterpret_cast<const char*>(&ll), sizeof(ll));
+    dest.append(reinterpret_cast<const char*>(field.data()), ll);
 }
 
 void CacheableWriter::serializestring(const string& field)
@@ -362,6 +372,36 @@ bool CacheableReader::unserializecstr(string& s, bool removeNull)
     return true;
 }
 
+bool CacheableReader::unserializestring(std::wstring& s)
+{
+    if (ptr + sizeof(unsigned short) > end)
+    {
+        return false;
+    }
+
+    const unsigned short len_bytes = MemAccess::get<unsigned short>(ptr);
+    ptr += sizeof(len_bytes);
+
+    if (ptr + len_bytes > end)
+    {
+        return false;
+    }
+
+    if (len_bytes)
+    {
+        if (len_bytes % sizeof(wchar_t) != 0)
+        {
+            return false;
+        }
+
+        size_t wchar_count = len_bytes / sizeof(wchar_t);
+        s.assign(reinterpret_cast<const wchar_t*>(ptr), wchar_count);
+    }
+
+    ptr += len_bytes;
+    fieldnum += 1;
+    return true;
+}
 
 bool CacheableReader::unserializestring(string& s)
 {
@@ -503,8 +543,7 @@ void chunkmac_map::calcprogress(m_off_t size, m_off_t& chunkpos, m_off_t& progre
             }
         }
     }
-
-    progresscontiguous = chunkpos;
+    setProgressContiguous(chunkpos);
 }
 
 m_off_t chunkmac_map::nextUnprocessedPosFrom(m_off_t pos)
@@ -620,6 +659,20 @@ void chunkmac_map::ctr_decrypt(m_off_t chunkid, SymmCipher *cipher, byte *chunks
     }
 }
 
+void chunkmac_map::setProgressContiguous(const m_off_t p)
+{
+    progresscontiguous = p;
+    DEBUG_TEST_HOOK_ON_PROGRESS_CONTIGUOUS_UPDATE(progresscontiguous);
+}
+
+void chunkmac_map::swap(chunkmac_map& other)
+{
+    mMacMap.swap(other.mMacMap);
+    std::swap(macsmacSoFarPos, other.macsmacSoFarPos);
+    std::swap(progresscontiguous, other.progresscontiguous);
+    DEBUG_TEST_HOOK_ON_PROGRESS_CONTIGUOUS_UPDATE(progresscontiguous);
+}
+
 void chunkmac_map::finishedUploadChunks(chunkmac_map& macs)
 {
     for (auto& m : macs.mMacMap)
@@ -648,7 +701,8 @@ m_off_t chunkmac_map::updateContiguousProgress(m_off_t fileSize)
 
     while (finishedAt(progresscontiguous))
     {
-        progresscontiguous = ChunkedHash::chunkceil(progresscontiguous, fileSize);
+        const auto p = ChunkedHash::chunkceil(progresscontiguous, fileSize);
+        setProgressContiguous(p);
     }
     return progresscontiguous;
 }
@@ -704,6 +758,50 @@ void chunkmac_map::copyEntriesTo(chunkmac_map& other)
         assert(e.first > macsmacSoFarPos);
         other.mMacMap[e.first] = e.second;
     }
+}
+
+m_off_t chunkmac_map::copyEntriesToUntilRaidlineBeforePos(m_off_t maxPos, chunkmac_map& other)
+{
+    static constexpr auto logPre = "[chunkmac_map::copyEntriesToUntilRaidlineBeforePos] ";
+
+    maxPos = ChunkedHash::chunkfloor(maxPos);
+    while (maxPos > 0 && (maxPos % RAIDLINE != 0))
+    {
+        LOG_debug << logPre << "Wrong maxPos not padded to RAIDLINE: maxPos = " << maxPos
+                  << ", RAIDLINE = " << RAIDLINE << ", mod = " << (maxPos % RAIDLINE);
+        maxPos -= (maxPos % RAIDLINE);
+        maxPos = ChunkedHash::chunkfloor(maxPos);
+        if (maxPos % RAIDLINE != 0)
+        {
+            LOG_debug << logPre << "maxPos still not padded to RAIDLINE: pos = " << maxPos
+                      << ", RAIDLINE = " << RAIDLINE << ", mod = " << (maxPos % RAIDLINE);
+        }
+    }
+
+    LOG_debug << logPre << "Final maxPos = " << maxPos;
+
+    if (maxPos == 0)
+        return 0;
+
+    for (auto& e: mMacMap)
+    {
+        if (e.first >= maxPos)
+        {
+            LOG_debug << logPre << "chunk (" << e.first << ") exceeding maxPos (maxPos = " << maxPos
+                      << "), break";
+            break;
+        }
+        if (!e.second.finished)
+        {
+            LOG_debug << logPre << "chunk (" << e.first
+                      << ") not finished (offset = " << e.second.offset << ") (maxPos = " << maxPos
+                      << "), break";
+            break;
+        }
+        other.mMacMap[e.first] = e.second;
+    }
+
+    return maxPos;
 }
 
 void chunkmac_map::copyEntryTo(m_off_t pos, chunkmac_map& other)
@@ -1721,16 +1819,65 @@ std::string Utils::join(const std::vector<std::string>& items, const std::string
     return r;
 }
 
-bool Utils::startswith(const std::string& str, const std::string& start)
+template<typename T>
+bool Utils::startswith(const std::basic_string<T>& str, const std::basic_string<T>& start)
 {
     if (str.length() < start.length()) return false;
-    return memcmp(str.data(), start.data(), start.length()) == 0;
+    return memcmp(str.data(), start.data(), start.length() * sizeof(T)) == 0;
 }
 
-bool Utils::startswith(const std::string &str, char chr)
+template bool Utils::startswith<char>(const std::string&, const std::string&);
+template bool Utils::startswith<wchar_t>(const std::wstring&, const std::wstring&);
+
+template<typename T>
+const T* Utils::startswith(const T* str, const T* start)
 {
-    return str.length() >= 1 && chr == str.front();
+    if (!str || !start)
+    {
+        return nullptr;
+    }
+    while (*str == *start)
+    {
+        if (*str == 0)
+        {
+            return str;
+        }
+        str++;
+        start++;
+    }
+    return *start == 0 ? str : nullptr;
 }
+
+template const char* Utils::startswith<char>(const char*, const char*);
+template const wchar_t* Utils::startswith<wchar_t>(const wchar_t*, const wchar_t*);
+
+template<typename T>
+bool Utils::endswith(const T* str, size_t strLen, const T* suffix, size_t sfxLen)
+{
+    if (strLen < sfxLen)
+    {
+        return false;
+    }
+    if (!str || !suffix)
+    {
+        return false;
+    }
+    const T* end = str + strLen;
+    const T* start = end - sfxLen;
+    while (start < end)
+    {
+        if (*start != *suffix)
+        {
+            return false;
+        }
+        start++;
+        suffix++;
+    }
+    return true;
+}
+
+template bool Utils::endswith(const char*, size_t, const char*, size_t);
+template bool Utils::endswith(const wchar_t*, size_t, const wchar_t*, size_t);
 
 bool Utils::endswith(const std::string &str, char chr)
 {
@@ -1748,6 +1895,11 @@ string Utils::trim(const string& str, const string& trimchrs)
     string::size_type e = str.find_last_not_of(trimchrs);
     if (e == string::npos) return "";	// impossible
     return str.substr(s, e - s + 1);
+}
+
+std::string Utils::getIcuVersion()
+{
+    return U_ICU_VERSION;
 }
 
 struct tm* m_localtime(m_time_t ttime, struct tm *dt)
@@ -2850,10 +3002,25 @@ bool haveDuplicatedValues(const string_map& readableVals, const string_map& b64V
 
 void SyncTransferCount::operator-=(const SyncTransferCount& rhs)
 {
-    mCompleted -= rhs.mCompleted;
-    mCompletedBytes -= rhs.mCompletedBytes;
-    mPending -= rhs.mPending;
-    mPendingBytes -= rhs.mPendingBytes;
+    auto updateVal = [](auto& dest, const auto v, const std::string& msg)
+    {
+        using T = std::decay_t<decltype(dest)>;
+        static_assert(std::is_unsigned<T>::value, "dest debe ser unsigned");
+
+        if (v > dest)
+        {
+            LOG_err << "SyncTransferCount::operator-=. Underflow for " << msg;
+            dest = 0;
+            assert(false);
+            return;
+        }
+        dest -= v;
+    };
+
+    updateVal(mCompleted, rhs.mCompleted, "mCompleted");
+    updateVal(mCompletedBytes, rhs.mCompletedBytes, "mCompletedBytes");
+    updateVal(mPending, rhs.mPending, "mPending");
+    updateVal(mPendingBytes, rhs.mPendingBytes, "mPendingBytes");
 }
 
 bool SyncTransferCount::operator==(const SyncTransferCount& rhs) const
@@ -2867,6 +3034,12 @@ bool SyncTransferCount::operator==(const SyncTransferCount& rhs) const
 bool SyncTransferCount::operator!=(const SyncTransferCount& rhs) const
 {
     return !(*this == rhs);
+}
+
+void SyncTransferCount::clearPendingValues()
+{
+    mPending = 0;
+    mPendingBytes = 0;
 }
 
 void SyncTransferCounts::operator-=(const SyncTransferCounts& rhs)
@@ -2888,15 +3061,25 @@ bool SyncTransferCounts::operator!=(const SyncTransferCounts& rhs) const
 double SyncTransferCounts::progress(m_off_t inflightProgress) const
 {
     auto pending = mDownloads.mPendingBytes + mUploads.mPendingBytes;
-
     if (!pending)
         return 1.0; // 100%
 
     auto completed = mDownloads.mCompletedBytes + mUploads.mCompletedBytes +
                      static_cast<uint64_t>(inflightProgress);
-    auto progress = static_cast<double>(completed) / static_cast<double>(pending);
 
+    auto progress = static_cast<double>(completed) / static_cast<double>(completed + pending);
     return std::min(1.0, progress);
+}
+
+m_off_t SyncTransferCounts::pendingTransferBytes() const
+{
+    return static_cast<m_off_t>(mDownloads.mPendingBytes + mUploads.mPendingBytes);
+}
+
+void SyncTransferCounts::clearPendingValues()
+{
+    mDownloads.clearPendingValues();
+    mUploads.clearPendingValues();
 }
 
 #ifdef WIN32
@@ -3000,6 +3183,14 @@ std::string_view toString(const PasswordEntryError err)
             return "Missing totp hash alg";
         case PasswordEntryError::INVALID_TOTP_HASH_ALG:
             return "Invalid totp hash alg";
+        case PasswordEntryError::MISSING_CREDIT_CARD_NUMBER:
+            return "Missing credit card number";
+        case PasswordEntryError::INVALID_CREDIT_CARD_NUMBER:
+            return "Invalid credit card number";
+        case PasswordEntryError::INVALID_CREDIT_CARD_CVV:
+            return "Invalid credit card cvv (card validation value)";
+        case PasswordEntryError::INVALID_CREDIT_CARD_EXPIRATION_DATE:
+            return "Invalid credit card expiration date";
     }
     assert(false);
     return "Unknown error";
@@ -3533,6 +3724,122 @@ std::string getThisThreadIdStr()
     std::stringstream ss;
     ss << std::this_thread::get_id();
     return ss.str();
+}
+
+storagestatus_t getStorageStatusFromString(const std::string& storageStatusStr)
+{
+    if (storageStatusStr.empty())
+    {
+        return STORAGE_GREEN;
+    }
+
+    const auto storageStatusOpt = stringToNumber<int>(storageStatusStr);
+    if (!storageStatusOpt)
+    {
+        LOG_err << "[getStorageStatusFromString] error: cannot parse storage status from value = "
+                << storageStatusStr;
+        return STORAGE_UNKNOWN;
+    }
+
+    const auto storageStatus = static_cast<storagestatus_t>(*storageStatusOpt);
+    switch (storageStatus)
+    {
+        case STORAGE_RED:
+        case STORAGE_ORANGE:
+        case STORAGE_GREEN:
+            return storageStatus;
+        default:
+            return STORAGE_UNKNOWN;
+    }
+}
+
+std::optional<bool> isCaseInsensitive(const LocalPath& path, FileSystemAccess* fsaccess)
+{
+    static constexpr auto logPre = "[Util - determineCaseInsenstivity] ";
+    auto da = std::unique_ptr<DirAccess>(fsaccess->newdiraccess());
+    auto lp = path;
+    if (da->dopen(&lp, NULL, false))
+    {
+        LocalPath leafName;
+        nodetype_t dirEntryType;
+        while (da->dnext(lp, leafName, false, &dirEntryType))
+        {
+            auto uc = Utils::toUpperUtf8(leafName.toPath(false));
+            auto lc = Utils::toLowerUtf8(leafName.toPath(false));
+
+            if (uc == lc)
+                continue;
+
+            auto lpuc = path;
+            auto lplc = path;
+
+            lpuc.appendWithSeparator(LocalPath::fromRelativePath(uc), true);
+            lplc.appendWithSeparator(LocalPath::fromRelativePath(lc), true);
+
+            LOG_debug << logPre << "Testing sync case sensitivity with " << lpuc << " vs " << lplc;
+
+            auto fa1 = fsaccess->newfileaccess();
+            auto fa2 = fsaccess->newfileaccess();
+
+            LOG_verbose << logPre << "Opening " << lpuc;
+            bool opened1 = fa1->fopen(lpuc,
+                                      true,
+                                      false,
+                                      FSLogging::logExceptFileNotFound,
+                                      nullptr,
+                                      false,
+                                      true);
+            LOG_verbose << logPre << "Opened " << lpuc << " with result: " << opened1
+                        << ". Closing...";
+            fa1->closef();
+            LOG_verbose << logPre << "Closed " << lpuc;
+
+            LOG_verbose << logPre << "Opening " << lplc;
+            bool opened2 = fa2->fopen(lplc,
+                                      true,
+                                      false,
+                                      FSLogging::logExceptFileNotFound,
+                                      nullptr,
+                                      false,
+                                      true);
+            LOG_verbose << logPre << "Opened " << lplc << " with result: " << opened2
+                        << ". Closing...";
+            fa2->closef();
+            LOG_verbose << logPre << "Closed " << lplc;
+
+            opened1 = opened1 && fa1->fsidvalid;
+            opened2 = opened2 && fa2->fsidvalid;
+
+            if (!opened1 && !opened2)
+            {
+                LOG_verbose
+                    << logPre << "Neither " << lpuc << " nor " << lplc
+                    << " were opened or both fsid were invalid. Continue... [fa1->fsidvalid = "
+                    << fa1->fsidvalid << ", fa2->fsidvalid = " << fa2->fsidvalid << "]";
+                continue;
+            }
+
+            if (opened1 != opened2)
+            {
+                LOG_verbose << logPre << "Either " << lpuc << " or " << lplc
+                            << " were not opened or the fsid were invalid. Return false. "
+                               "[fa1->fsidvalid = "
+                            << fa1->fsidvalid << ", fa2->fsidvalid = " << fa2->fsidvalid << "]";
+                return false;
+            }
+
+            LOG_verbose << logPre << "Return fa1->fsidvalid(" << fa1->fsidvalid
+                        << ") && fa2->fsidvalid(" << fa2->fsidvalid << ") && fa1->fsid("
+                        << fa1->fsid << ") == fa2->fsid(" << fa2->fsid << ")";
+            return fa1->fsidvalid && fa2->fsidvalid && fa1->fsid == fa2->fsid;
+        }
+    }
+    else
+    {
+        LOG_debug << logPre << path << " could not be opened";
+    }
+
+    return std::nullopt;
 }
 
 } // namespace mega

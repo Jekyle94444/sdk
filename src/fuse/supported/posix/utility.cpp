@@ -1,12 +1,13 @@
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <cstring>
 
+#include <mega/common/utility.h>
 #include <mega/fuse/common/inode_info.h>
 #include <mega/fuse/common/logging.h>
 #include <mega/fuse/common/mount_inode_id.h>
-#include <mega/fuse/common/utility.h>
 #include <mega/fuse/platform/constants.h>
 #include <mega/fuse/platform/file_descriptor.h>
 #include <mega/fuse/platform/utility.h>
@@ -36,6 +37,34 @@ FileDescriptorPair pipe(bool closeReaderOnFork,
 
     // Return pipe to caller.
     return std::make_pair(std::move(r), std::move(w));
+}
+
+void nonblocking(int descriptor, bool enabled)
+{
+    // Sanity.
+    assert(descriptor >= 0);
+
+    // Try and get the descriptor's current status flags.
+    auto flags = fcntl(descriptor, F_GETFL);
+
+    // Couldn't get the descriptor's status flags.
+    if (flags < 0)
+        throw FUSEErrorF("Couldn't get descriptor status flags: %d: %s",
+                         descriptor,
+                         std::strerror(errno));
+
+    // Assume the user wants to enable nonblocking operation.
+    flags |= O_NONBLOCK;
+
+    // User really wants to disable nonblocking operation.
+    if (!enabled)
+        flags &= ~O_NONBLOCK;
+
+    // Couldn't update the descriptor's status flags.
+    if (fcntl(descriptor, F_SETFL, flags) < 0)
+        throw FUSEErrorF("Couldn't update descriptor status flags: %d: %s",
+                         descriptor,
+                         std::strerror(errno));
 }
 
 void translate(struct stat& attributes,

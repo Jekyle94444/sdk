@@ -110,7 +110,7 @@ protected:
 
     static size_t read_data(void*, size_t, size_t, void*);
     static size_t write_data(void*, size_t, size_t, void*);
-    static size_t check_header(void*, size_t, size_t, void*);
+    static size_t check_header(const char*, size_t, size_t, void*);
     static int seek_data(void*, curl_off_t, int);
 
     static int socket_callback(CURL *e, curl_socket_t s, int what, void *userp, void *socketp, direction_t d);
@@ -147,10 +147,17 @@ protected:
     static bool crackurl(const string*, string*, string*, int*);
     static int debug_callback(CURL*, curl_infotype, char*, size_t, void*);
     bool ipv6available();
+    const char* pubkeyForUrl(const char* url) const;
+
+    const char* pubkeyForUrl(const std::string& url) const
+    {
+        return pubkeyForUrl(url.c_str());
+    }
     bool curlipv6;
     bool reset;
     bool statechange;
     bool dnsok;
+    string dnsservers;
     curl_slist* contenttypejson;
     curl_slist* contenttypebinary;
     WAIT_CLASS* waiter;
@@ -186,6 +193,8 @@ public:
     void setuseragent(string*) override;
     void setproxy(const Proxy&) override;
     std::optional<Proxy> getproxy() const override;
+    // It returns false if curl does not have a DNS backend supporting custom DNS lists.
+    bool setdnsservers(const char*);
     void disconnect() override;
 
     // set max download speed

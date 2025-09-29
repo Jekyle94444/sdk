@@ -220,7 +220,7 @@ public:
      * location.
      */
     void renameDBToMatchTarget(const SyncConfig& targetConfig,
-                               const FileSystemAccess& fsAccess,
+                               FileSystemAccess& fsAccess,
                                const MegaClient& client) const;
 
     // How should the engine detect filesystem changes?
@@ -430,6 +430,8 @@ struct SyncRow
 
     // Does this row represent a "no name" triplet?
     bool isNoName() const;
+
+    void reassignFingerprints();
 };
 
 struct SyncPath
@@ -784,6 +786,8 @@ public:
     {
         return localroot != nullptr && localroot->hasPendingTransfers();
     }
+
+    bool hasPendingTransfersThreadSafeState() const;
 
     // What filesystem is this sync running on?
     const fsfp_t& fsfp() const;
@@ -2103,7 +2107,12 @@ private:
     // When the node tree changes, this structure lets the sync code know which LocalNodes need to be flagged
     map<NodeHandle, bool> triggerHandles;
     map<LocalPath, bool> triggerLocalpaths;
-    mutex triggerMutex;
+    mutable std::mutex triggerMutex;
+
+public:
+    bool triggerHandlesPending() const;
+
+    bool triggerLocalpathsPending() const;
 
     // Keep track of files that we can't move yet because they are changing
     struct FileChangingState
@@ -2395,6 +2404,9 @@ private:
      * @return vector with the latest known *!sds user attribute values.
      */
     SyncsDesiredStates getSdsBackupsFullSync() const;
+
+public:
+    bool anySyncHasPendingTransfersThreadSafeState() const;
 };
 
 class OverlayIconCachedPaths

@@ -1,5 +1,5 @@
+#include <mega/common/node_info.h>
 #include <mega/fuse/common/inode_info.h>
-#include <mega/fuse/common/node_info.h>
 #include <mega/fuse/common/testing/path.h>
 #include <mega/fuse/platform/date_time.h>
 #include <mega/fuse/platform/handle.h>
@@ -34,9 +34,25 @@ bool operator==(const WIN32_FILE_ATTRIBUTE_DATA& lhs,
 
 namespace mega
 {
+namespace common
+{
+
+template<typename T>
+auto operator==(const NodeInfo& lhs, const T& rhs)
+  -> std::enable_if_t<IsNativeInfoLike<T>::value, bool>
+{
+    return fuse::operator==(lhs, rhs);
+}
+
+template bool operator==(const NodeInfo&,  const BY_HANDLE_FILE_INFORMATION&);
+template bool operator==(const NodeInfo&,  const WIN32_FILE_ATTRIBUTE_DATA&);
+
+} // common
+
 namespace fuse
 {
 
+using namespace common;
 using namespace platform;
 
 template<typename T>
@@ -221,6 +237,47 @@ SecurityDescriptor GetFileSecurityP(const Path& path)
 long GetLastError()
 {
     return static_cast<long>(::GetLastError());
+}
+
+std::optional<VolumeInfo> GetVolumeInformationByPath(const Path& path)
+{
+    // Add trailing separator as necessary.
+    auto path_ = toWideString(path.string());
+
+    if (!path_.empty() && path_.back() != L'\\')
+        path_.push_back(L'\\');
+
+    // Preallocate maximum necessary space for names.
+    WCHAR filesystemName[MAX_PATH + 1];
+    WCHAR volumeName[MAX_PATH + 1];
+
+    // So we know how long the names actually are.
+    DWORD filesystemNameLength = 0u;
+    DWORD volumeNameLength = 0u;
+
+    // Couldn't get information about the specified volume.
+    if (!GetVolumeInformationW(path_.c_str(),
+                               volumeName,
+                               std::size(volumeName),
+                               nullptr,
+                               nullptr,
+                               nullptr,
+                               filesystemName,
+                               std::size(filesystemName)))
+        return std::nullopt;
+
+    // Make sure the names are null terminated.
+    filesystemName[MAX_PATH] = L'\0';
+    volumeName[MAX_PATH] = L'\0';
+
+    VolumeInfo info;
+
+    // Populate info instance.
+    info.mFilesystemName = fromWideString(filesystemName);
+    info.mVolumeName = fromWideString(volumeName);
+
+    // Return volume info to our caller.
+    return info;
 }
 
 BOOL MoveFileExP(const Path& source, const Path& target, DWORD flags)

@@ -392,13 +392,17 @@ std::shared_ptr<Node> NodeManager::getNodeByHandle_internal(NodeHandle handle)
     return node;
 }
 
-sharedNode_list NodeManager::getChildren(const Node *parent, CancelToken cancelToken)
+sharedNode_list NodeManager::getChildren(const Node* parent,
+                                         CancelToken cancelToken,
+                                         bool includeVersions)
 {
     LockGuard g(mMutex);
-    return getChildren_internal(parent, cancelToken);
+    return getChildren_internal(parent, cancelToken, includeVersions);
 }
 
-sharedNode_list NodeManager::getChildren_internal(const Node *parent, CancelToken cancelToken)
+sharedNode_list NodeManager::getChildren_internal(const Node* parent,
+                                                  CancelToken cancelToken,
+                                                  bool includeVersions)
 {
     assert(mMutex.owns_lock());
 
@@ -457,6 +461,7 @@ sharedNode_list NodeManager::getChildren_internal(const Node *parent, CancelToke
 
         std::vector<std::pair<NodeHandle, NodeSerialized>> nodesFromTable;
         NodeSearchFilter nf;
+        nf.includeVersions(includeVersions);
         nf.byAncestors({parent->nodehandle, UNDEF, UNDEF});
         mTable->getChildren(nf,
                             0 /*Order none*/,
@@ -1580,10 +1585,6 @@ bool NodeManager::loadNodes_internal()
     }
 
     sharedNode_vector allRootNodes = getRootNodes_internal();
-    // We can't base in `user.sharing` because it's set yet. We have to get from DB
-    sharedNode_vector inshares =
-        getNodesWithSharesOrLink_internal(ShareType_t::IN_SHARES); // it includes nested inshares
-
     for (const auto& node: allRootNodes)
     {
         getChildren_internal(node.get());
@@ -1750,6 +1751,18 @@ void NodeManager::initCompleted()
     initCompleted_internal();
 }
 
+void NodeManager::dropSearchDBIndexes()
+{
+    assert(mNodeNotify.empty());
+    if (!mTable || mNodesInRam > 0)
+    {
+        LOG_err << "DB isn't opened yet or nodes has been already loaded";
+        return;
+    }
+
+    mTable->dropSearchDBIndexes();
+}
+
 std::shared_ptr<Node> NodeManager::getNodeFromNodeManagerNode(NodeManagerNode& nodeManagerNode)
 {
     LockGuard g(mMutex);
@@ -1808,12 +1821,19 @@ void NodeManager::initCompleted_internal()
     }
 
     sharedNode_vector rootNodes = getRootNodesAndInshares();
-    for (auto& node : rootNodes)
+    for (auto& node: rootNodes)
     {
-        calculateNodeCounter(node->nodeHandle(), TYPE_UNKNOWN, node, node->type == RUBBISHNODE);
+        if (node)
+        {
+            calculateNodeCounter(node->nodeHandle(), TYPE_UNKNOWN, node, node->type == RUBBISHNODE);
+        }
+        else
+        {
+            reportNullRootNodes(rootNodes.size());
+        }
     }
 
-    mTable->createIndexes();
+    mTable->createIndexes(mClient.mEnableSearchDBIndexes);
     mInitialized = true;
 }
 
@@ -1877,9 +1897,16 @@ NodeCounter NodeManager::getCounterOfRootNodes_internal()
     }
 
     sharedNode_vector rootNodes = getRootNodes_internal();
-    for (auto& node : rootNodes)
+    for (auto& node: rootNodes)
     {
-        c += node->getCounter();
+        if (node)
+        {
+            c += node->getCounter();
+        }
+        else
+        {
+            reportNullRootNodes(rootNodes.size());
+        }
     }
 
     return c;
@@ -2005,7 +2032,7 @@ void NodeManager::dumpNodes_internal()
         }
     }
 
-    mTable->createIndexes();
+    mTable->createIndexes(mClient.mEnableSearchDBIndexes);
     mInitialized = true;
 }
 

@@ -3,9 +3,9 @@
 
 #include <cstring>
 
+#include <mega/common/node_info.h>
 #include <mega/fuse/common/constants.h>
 #include <mega/fuse/common/inode_info.h>
-#include <mega/fuse/common/node_info.h>
 #include <mega/fuse/common/testing/path.h>
 #include <mega/fuse/platform/file_descriptor.h>
 #include <mega/fuse/platform/platform.h>
@@ -34,6 +34,21 @@ bool operator!=(const Stat& lhs, const Stat& rhs)
 
 namespace mega
 {
+namespace common
+{
+
+bool operator==(const NodeInfo& lhs, const Stat& rhs)
+{
+    return fuse::operator==(lhs, rhs);
+}
+
+bool operator!=(const NodeInfo& lhs, const Stat& rhs)
+{
+    return fuse::operator!=(lhs, rhs);
+}
+
+} // common
+
 namespace fuse
 {
 
@@ -58,7 +73,7 @@ auto operator==(const T& lhs, const Stat& rhs)
     if (lhs.mPermissions == FULL)
         permissions |= S_IWUSR;
 
-    auto size = std::max<off_t>(lhs.mSize, BlockSize);
+    auto size = std::max<m_off_t>(lhs.mSize, BlockSize);
     auto blocks = (size + 511) / 512;
 
     constexpr auto mask = S_IRWXG | S_IRWXO | S_IRWXU;
@@ -74,7 +89,7 @@ auto operator==(const T& lhs, const Stat& rhs)
 }
 
 template bool operator==(const InodeInfo&, const Stat&);
-template bool operator==(const NodeInfo&, const Stat&);
+template bool operator==(const common::NodeInfo&, const Stat&);
 
 namespace testing
 {

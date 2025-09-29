@@ -295,6 +295,11 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
     ImportPasswordSourceGoogle = 0, // Google Password Manager
 };
 
+typedef NS_ENUM(NSInteger, PasswordManagerNodeType) {
+    PasswordManagerNodeTypePassword = 1, // Password node
+    PasswordManagerNodeTypeCreditCard = 2 // Credit card node
+};
+
 /**
  * @brief Allows to control a MEGA account or a public folder.
  *
@@ -811,9 +816,15 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
 * is MEGAErrorTypeApiOk:
 * - [MEGARequest link] - URL to open the desired page with the same account
 *
-* @param url URL inside https://mega.nz/# that we want to open with the current session
+* If the client is logged in, but the account is not fully confirmed (ie. singup not
+* completed yet), this method will return API_EACCESS.
 *
-* For example, if you want to open https://mega.nz/#pro, the parameter of this function should be "pro".
+* If the client is not logged in, there won't be any session to transfer, but this method
+* will still return the MEGA's host (ie. https://mega.app) followed by /#<path>.
+*
+* @param url URL inside the MEGA's host that we want to open with the current session
+*
+* For example, if you want to open https://mega.app/#pro, the parameter of this function should be "pro".
 *
 * @param delegate MEGARequestDelegate to track this request
 */
@@ -827,9 +838,15 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
 * is MEGAErrorTypeApiOk:
 * - [MEGARequest link] - URL to open the desired page with the same account
 *
-* @param url URL inside https://mega.nz/# that we want to open with the current session
+* If the client is logged in, but the account is not fully confirmed (ie. singup not
+* completed yet), this method will return API_EACCESS.
 *
-* For example, if you want to open https://mega.nz/#pro, the parameter of this function should be "pro".
+* If the client is not logged in, there won't be any session to transfer, but this method
+* will still return the MEGA's host (ie. https://mega.app) followed by /#<path>.
+*
+* @param url URL inside the MEGA's host that we want to open with the current session
+*
+* For example, if you want to open https://mega.app/#pro, the parameter of this function should be "pro".
 */
 - (void)getSessionTransferURL:(NSString *)path;
 
@@ -1780,10 +1797,9 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  * to confirm, and the [MEGARequest name] will return the name.
  *
  * @param link Confirmation link.
- * @param password Password for the account.
  * @param delegate Delegate to track this request.
  */
-- (void)confirmAccountWithLink:(NSString *)link password:(NSString *)password delegate:(id<MEGARequestDelegate>)delegate;
+- (void)confirmAccountWithLink:(NSString *)link delegate:(id<MEGARequestDelegate>)delegate;
 
 /**
  * @brief Confirm a MEGA account using a confirmation link and the user password.
@@ -1811,9 +1827,8 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  * to confirm, and the [MEGARequest name] will return the name.
  *
  * @param link Confirmation link.
- * @param password Password for the account.
  */
-- (void)confirmAccountWithLink:(NSString *)link password:(NSString *)password;
+- (void)confirmAccountWithLink:(NSString *)link;
 
 /**
  * @brief Initialize the reset of the existing password, with and without the Master Key.
@@ -1931,6 +1946,18 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  * @param masterKey Base64-encoded string containing the master key (optional).
  */
 - (void)confirmResetPasswordWithLink:(NSString *)link newPassword:(NSString *)newPassword masterKey:(nullable NSString *)masterKey;
+
+/**
+ * @brief Check that the provided recovery key (master key) is correct
+ *
+ * The associated request type with this request is MEGARequestTypeCheckRecoveryKey
+ * No data in the MEGARequest object received on all callbacks
+ *
+ * @param link The recovery link sent to the user's email address.
+ * @param recoveryKey Base64-encoded string containing the recoveryKey (masterKey).
+ * @param delegate Delegate to track this request
+ */
+- (void)checkRecoveryKey:(NSString *)link recoveryKey:(NSString *)recoveryKey delegate:(id<MEGARequestDelegate>)delegate;
 
 /**
  * @brief Initialize the cancellation of an account.
@@ -3973,7 +4000,30 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  * @param longitude Longitude in signed decimal degrees notation.
  * @param delegate Delegate to track this request.
  */
-- (void)setUnshareableNodeCoordinates:(MEGANode *)node latitude:(nullable NSNumber *)latitude longitude:(nullable NSNumber *)longitude delegate:(id<MEGARequestDelegate>)delegate;
+- (void)setUnshareableNodeCoordinates:(MEGANode *)node latitude:(double)latitude longitude:(double)longitude delegate:(id<MEGARequestDelegate>)delegate;
+
+/**
+ * @brief Set the GPS coordinates of image files as a node attribute.
+ *
+ * To remove the existing coordinates, set both the latitude and longitude to nil.
+ *
+ * The 'unshareable' variant of this function stores the coordinates with an extra
+ * layer of encryption which only this user can decrypt, so that even if this node is shared
+ * with others, they cannot read the coordinates.
+ *
+ * The associated request type with this request is MEGARequestTypeSetAttrNode
+ * Valid data in the MEGARequest object received on callbacks:
+ * - [MEGARequest nodeHandle] - Returns the handle of the node that receive the attribute
+ * - [MEGARequest flag] - Returns YES (official attribute)
+ * - [MEGARequest paramType] - Returns MEGANodeAttributeCoordinates
+ * - [MEGARequest numDetails] - Returns the longitude, scaled to integer in the range of [0, 2^24]
+ * - [MEGARequest transferTag] - Returns the latitude, scaled to integer in the range of [0, 2^24)
+ *
+ * @param node MEGANode that will receive the information.
+ * @param latitude Latitude in signed decimal degrees notation.
+ * @param longitude Longitude in signed decimal degrees notation.
+ */
+- (void)setUnshareableNodeCoordinates:(MEGANode *)node latitude:(double)latitude longitude:(double)longitude;
 
 /**
  * @brief Generate a public link of a file/folder in MEGA.
@@ -4097,6 +4147,49 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
 - (void)openShareDialog:(MEGANode *)node delegate:(id<MEGARequestDelegate>)delegate;
 
 #pragma mark - Attributes Requests
+
+/**
+ * @brief Get the thumbnail of a node.
+ *
+ * If the node doesn't have a thumbnail the request fails with the MEGAErrorTypeApiENoent
+ * error code.
+ *
+ * The associated request type with this request is MEGARequestTypeGetAttrFile.
+ * Valid data in the MEGARequest object received on callbacks:
+ * - [MEGARequest nodeHandle] - Returns the handle of the node
+ * - [MEGARequest file] - Returns the destination path
+ * - [MEGARequest paramType] - Returns MEGAAttributeTypeThumbnail
+ *
+ * @param nodeHandle Handle of the Node to get the thumbnail.
+ * @param destinationFilePath Destination path for the thumbnail.
+ * If this path is a local folder, it must end with a '\' or '/' character and (Base64-encoded handle + "0.jpg")
+ * will be used as the file name inside that folder. If the path doesn't finish with
+ * one of these characters, the file will be downloaded to a file in that path.
+ *
+ * @param delegate Delegate to track this request.
+ */
+- (void)getThumbnailWithNodeHandle:(uint64_t)nodeHandle destinationFilePath:(NSString *)destinationFilePath delegate:(id<MEGARequestDelegate>)delegate;
+
+/**
+ * @brief Get the thumbnail of a node.
+ *
+ * If the node doesn't have a thumbnail the request fails with the MEGAErrorTypeApiENoent
+ * error code.
+ *
+ * The associated request type with this request is MEGARequestTypeGetAttrFile.
+ * Valid data in the MEGARequest object received on callbacks:
+ * - [MEGARequest nodeHandle] - Returns the handle of the node
+ * - [MEGARequest file] - Returns the destination path
+ * - [MEGARequest paramType] - Returns MEGAAttributeTypeThumbnail
+ *
+ * @param nodeHandle Handle of the Node to get the thumbnail.
+ * @param destinationFilePath Destination path for the thumbnail.
+ * If this path is a local folder, it must end with a '\' or '/' character and (Base64-encoded handle + "0.jpg")
+ * will be used as the file name inside that folder. If the path doesn't finish with
+ * one of these characters, the file will be downloaded to a file in that path.
+ *
+ */
+- (void)getThumbnailWithNodeHandle:(uint64_t)nodeHandle destinationFilePath:(NSString *)destinationFilePath;
 
 /**
  * @brief Get the thumbnail of a node.
@@ -8193,25 +8286,10 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  * Valid data in the MEGARequest object received in onRequestFinish:
  * - [MEGARequest text] - "0" for disable, "1" for enable
  *
- * @param disable YES to disable the automatic approval of incoming contact requests using a contact link
+ * @param enable YES to enable the automatic approval of incoming contact requests using a contact link
  * @param delegate MEGARequestDelegate to track this request
  */
-- (void)setContactLinksOptionDisable:(BOOL)disable delegate:(id<MEGARequestDelegate>)delegate;
-
-/**
- * @brief Enable or disable the automatic approval of incoming contact requests using a contact link
- *
- * The associated request type with this request is MEGARequestTypeSetAttrUser
- *
- * Valid data in the MEGARequest object received on callbacks:
- * - [MEGARequest paramType] - Returns the value MEGAUserAttributeContactLinkVerification
- *
- * Valid data in the MEGARequest object received in onRequestFinish:
- * - [MEGARequest text] - "0" for disable, "1" for enable
- *
- * @param disable YES to disable the automatic approval of incoming contact requests using a contact link
- */
-- (void)setContactLinksOptionDisable:(BOOL)disable;
+- (void)setContactLinksOption:(BOOL)enable delegate:(id<MEGARequestDelegate>)delegate;
 
 /**
  * @brief Check if the automatic approval of incoming contact requests using contact links is enabled or disabled
@@ -9704,6 +9782,37 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  */
 - (void)runNetworkConnectivityTestWithDelegate:(id<MEGARequestDelegate>)delegate;
 
+/**
+ * @brief Retrieve the cancellation details of a subscription
+ *
+ * This function requests information about the cancellation status of a subscription.
+ * If the optional original transaction ID is not provided, the details of the most recent
+ * subscription will be returned.
+ *
+ * The associated request type with this request is
+ * MEGARequestTypeGetSubscriptionCancellationDetails
+ *
+ * Valid data in the MegaRequest object received in onRequestFinish when the error code
+ * is MEGAErrorTypeApiOk:
+ * - [MEGARequest text] - Returns the original transaction ID
+ * - [MEGARequest number] - Returns the subscription's expiration timestamp
+ * - [MEGARequest numDetails] - Returns the cancellation timestamp, or 0 if not cancelled
+ *
+ * Possible errors:
+ * - MEGAErrorTypeApiEArgs - If the gateway is not provided or not equal to MEGAPaymentMethodItunes
+ *  (because only Apple is supported as of now), or if the transaction ID is not a string
+ * - MEGAErrorTypeApiENoent - If the provided transaction ID is not valid, or the user does
+ * not have a subscription via the specified gateway
+ *
+ * @param gateway Payment gateway
+ * Currently supported payment gateways are:
+ * - MEGAPaymentMethodItunes = 2
+ * @param originalTransactionId Original transaction ID. Optional. If not provided, the last
+ * subscription's details will be returned.
+ * @param delegate MEGARequestDelegate to track this request.
+ */
+- (void)getSubscriptionCancellationDetailsWithGateway:(MEGAPaymentMethod)gateway originalTransactionId:(nullable NSString *)originalTransactionId delegate:(id<MEGARequestDelegate>)delegate;
+
 #pragma mark - Password Manager
 
 /**
@@ -9723,30 +9832,32 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  */
 - (void)getPasswordManagerBaseWithDelegate:(id<MEGARequestDelegate>)delegate;
 
- /**
- * @brief Returns true if provided MegaHandle is of a Password Node Folder
+/**
+ * @brief Returns true if provided MEGAHandle belongs to a Password Manager Node Folder
  *
- * A folder is considered a Password Node Folder if Password Manager Base is its
- * ancestor.
+ * A folder is considered a Password Manager Node Folder if Password Manager Base is its
+ * ancestor, or if the node is the Password Manager Base folder itself.
  *
- * @param node MegaHandle of the node to check if it is a Password Node Folder
+ * @param node MEGAHandle of the node to check if it is a Password Manager Node Folder
+ * @return true if this node is a Password Manager Node Folder, false otherwise.
+ * In case node doesn't exists this method will also returns false.
  */
-- (BOOL)isPasswordNodeFolderWithHandle:(MEGAHandle)node;
+- (BOOL)isPasswordManagerNodeFolderWithHandle:(MEGAHandle)node;
 
 /**
  * @brief Create a new Password Node in your Password Manager tree
  *
- * The associated request type with this request is MegaRequest::TYPE_CREATE_PASSWORD_NODE
- * Valid data in the MegaRequest object received on callbacks:
- * - MegaRequest::getParentHandle - Handle of the parent provided as an argument
- * - MegaRequest::getName - name for the new Password Node provided as an argument
+ * The associated request type with this request is MEGARequestTypeCreatePasswordNode
+ * Valid data in the MEGARequest object received on callbacks:
+ * - [MEGARequest parentHandle] - Handle of the parent provided as an argument
+ * - [MEGARequest name] - name for the new Password Node provided as an argument
  *
- * Valid data in the MegaRequest object received in onRequestFinish when the error code
- * is MegaError::API_OK:
- * - MegaRequest::getNodeHandle - Handle of the new Password Node
+ * Valid data in the MEGARequest object received in onRequestFinish when the error code
+ * is MEGAErrorTypeApiOk:
+ * - [MEGARequest nodeHandle] - Handle of the new Password Node
  *
  * If the MEGA account is a business account and it's status is expired, onRequestFinish will
- * be called with the error code MegaError::API_EBUSINESSPASTDUE.
+ * be called with the error code MEGAErrorTypeApiEBusinessPastDue.
  *
  * @param name Name for the new Password Node
  * @param data The data of the new Password Node
@@ -9755,21 +9866,93 @@ typedef NS_ENUM(NSInteger, ImportPasswordFileSource) {
  */
 - (void)createPasswordNodeWithName:(NSString *)name data:(PasswordNodeData *)data parent:(MEGAHandle)parent delegate:(id<MEGARequestDelegate>)delegate;
 
- /**
+/**
  * @brief Update a Password Node in the MEGA account according to the parameters
  *
- * The associated request type with this request is MegaRequest::TYPE_UPDATE_PASSWORD_NODE
- * Valid data in the MegaRequest object received on callbacks:
- * - MegaRequest::getNodeHandle - handle provided of the Password Node to update
+ * The associated request type with this request is MEGARequestTypeUpdatePasswordNode
+ * Valid data in the MEGARequest object received on callbacks:
+ * - [MEGARequest nodeHandle] - handle provided of the Password Node to update
  *
  * If the MEGA account is a business account and it's status is expired, onRequestFinish will
- * be called with the error code MegaError::API_EBUSINESSPASTDUE.
+ * be called with the error code MEGAErrorTypeApiEBusinessPastDue.
  *
  * @param node Node to modify
  * @param newData The new data of the Password Node to update
  * @param delegate MEGARequestDelegate to track this request
  */
 - (void)updatePasswordNodeWithHandle:(MEGAHandle)node newData:(PasswordNodeData *)newData delegate:(id<MEGARequestDelegate>)delegate;
+
+/**
+ * @brief Create a new Credit Card Node in your Password Manager tree
+ *
+ * The associated request type with this request is MEGARequestTypeCreatePasswordNode
+ * Valid data in the MEGARequest object received on callbacks:
+ * - [MEGARequest parentHandle] - Handle of the parent provided as an argument
+ * - [MEGARequest name] - Name for the new Password Node provided as an argument
+ * - [MEGARequest paramType] - Returns PasswordManagerNodeTypeCreditCard
+ *
+ * Valid data in the MEGARequest object received in onRequestFinish when the error code
+ * is MEGAErrorTypeApiOk:
+ * - [MEGARequest nodeHandle] - Handle of the new Password Node
+ *
+ * On the onRequestFinish error, the error code associated to the MEGAError can be:
+ * - MEGAErrorTypeApiEBusinessPastDue:
+ *   + If the MEGA account is a business account and it's status is expired
+ * - MEGAErrorTypeApiEArgs:
+ *   + If `name` is nil or empty string
+ *   + If `data` is nil
+ *   + If `parent` does belong to a passwordNodeFolder
+ * - MEGAErrorTypeApiEExist:
+ *   + If there already is a Password Manager Node in the target path with the same name. In
+ *     that case, the existing Password Manager Node MegaHandle can be retrieved by
+ *     [MEGARequest nodeHandle].
+ * - MEGAErrorTypeApiEAppKey:
+ *   + If the `data` is ill-formed. These are the format requirements for the data in the
+ *     MEGACreditCardNodeData object:
+ *     - `cardNumber`: Mandatory (not nil nor empty string). Can only contain digits (no
+ *       spaces or other characters are allowed)
+ *     - `cvv`: Optional. If defined, must contain only digits (no spaces or other
+ *       characters are allowed)
+ *     - `expirationDate`: Optional. If defined must follow exactly the format: MM/YY, where
+ *       MM and YY are digits and MM must be between 01 and 12. Some examples:
+ *       + Valid inputs: 01/11, 12/25, 05/99.
+ *       + Invalid inputs: 13/25, 1/30, 03/5.
+ *     - `notes` and `cardHolderName`: Optionals and with no format restrictions.
+ *
+ * @param name Name for the new Credit Card Node
+ * @param data Credit Card Node data for the Credit Card Node
+ * @param parent Parent folder for the new Credit Card Node
+ * @param delegate MEGARequestDelegate to track this request
+ */
+- (void)createCreditCardNodeWithName:(NSString *)name data:(MEGACreditCardNodeData *)data parent:(MEGAHandle)parent delegate:(id<MEGARequestDelegate>)delegate;
+
+/**
+ * @brief Update a Credit Card Node in the MEGA account according to the parameters
+ *
+ * The associated request type with this request is MEGARequestTypeUpdatePasswordNode
+ * Valid data in the MegaRequest object received on callbacks:
+ * - [MEGARequest nodeHandle] - Handle provided of the Password Node to update
+ * - [MEGARequest paramType] - Returns PasswordManagerNodeTypeCreditCard
+ *
+ * If the MEGA account is a business account and it's status is expired, onRequestFinish
+ * will be called with the error code MEGAErrorTypeApiEBusinessPastDue.
+ *
+ * On the onRequestFinish error, the error code associated to the MEGAError can be:
+ * - MEGAErrorTypeApiEBusinessPastDue:
+ *   + If the MEGA account is a business account and it's status is expired
+ * - MEGAErrorTypeApiEArgs:
+ *   + If `newData` is nullptr or empty
+ *   + If `node` does not exist or does not belong to a Credit Card Node
+ * - MEGAErrorTypeApiEAppKey:
+ *   + If the node ends up in an invalid state after applying the provided updates in
+ *    `newData`. See [MEGASDK createCreditCardNodeWithName:data:parent:delegate:] documentation for more details on the
+ *    expected format of each field if specified for the update.
+ *
+ * @param node Node to modify
+ * @param newData New data for the Credit Card Node to update
+ * @param delegate MEGARequestDelegate to track this request
+ */
+- (void)updateCreditCardNodeWithHandle:(MEGAHandle)node newData:(MEGACreditCardNodeData *)newData delegate:(id<MEGARequestDelegate>)delegate;
 
 /**
  * @brief Import passwords from a file into your Password Manager tree

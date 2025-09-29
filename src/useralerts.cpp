@@ -1348,6 +1348,109 @@ UserAlert::Takedown* UserAlert::Takedown::unserialize(string* d, unsigned id)
     return nullptr;
 }
 
+UserAlert::SetTakedown::SetTakedown(UserAlertRaw& un, unsigned int id):
+    Base(un, id)
+{
+    int n = un.getint(MAKENAMEID2('t', 'd'), -1);
+    isTakedown = n == 1;
+    isReinstate = n == 0;
+    reason = PublicLinkSet::apiCodeToDeletionReason(un.getint(MAKENAMEID1('c'), 0));
+    setId = un.gethandle('s', MegaClient::SETHANDLE, UNDEF);
+    pst.relevant = isTakedown || isReinstate;
+}
+
+UserAlert::SetTakedown::SetTakedown(bool down,
+                                    bool reinstate,
+                                    PublicLinkSet::LinkDeletionReason downReason,
+                                    handle sId,
+                                    m_time_t timestamp,
+                                    unsigned int id):
+    Base(name_id::ass, UNDEF, "", timestamp, id),
+    isTakedown{down},
+    isReinstate{reinstate},
+    reason{downReason},
+    setId{sId}
+{
+    pst.relevant = isTakedown || isReinstate;
+}
+
+void UserAlert::SetTakedown::text(string& header, string& title, MegaClient* mc)
+{
+    updateEmail(mc);
+    const std::string name = std::invoke(
+        [this, &mc]() -> std::string
+        {
+            const Set* set = mc->getSet(setId);
+            if (set)
+            {
+                return set->name();
+            }
+
+            char buffer[12];
+            Base64::btoa((byte*)&(setId), MegaClient::SETHANDLE, buffer);
+            return std::string("set id ") + buffer;
+        });
+
+    ostringstream s;
+    if (isTakedown)
+    {
+        header = "Takedown notice";
+        s << "Your publicly shared set (" << name << ") has been taken down due to reason: "
+          << PublicLinkSet::LinkDeletionReasonToString(reason) << ".";
+    }
+    else if (isReinstate)
+    {
+        header = "Takedown reinstated";
+        s << "Your taken down set (" << name << ") has been reinstated.";
+    }
+    title = s.str();
+}
+
+bool UserAlert::SetTakedown::serialize(string* d) const
+{
+    Base::serialize(d);
+    CacheableWriter w(*d);
+    w.serializebool(isTakedown);
+    w.serializebool(isReinstate);
+    w.serializeu8(static_cast<uint8_t>(reason));
+    w.serializehandle(setId);
+    w.serializeexpansionflags();
+
+    return true;
+}
+
+UserAlert::SetTakedown* UserAlert::SetTakedown::unserialize(string* d, unsigned id)
+{
+    auto p = Base::unserialize(d);
+    if (!p)
+    {
+        return nullptr;
+    }
+
+    bool takedown = false;
+    bool reinstate = false;
+    uint8_t reasonId = 0;
+    handle setId = UNDEF;
+    unsigned char expF[8];
+
+    CacheableReader r(*d);
+    if (r.unserializebool(takedown) && r.unserializebool(reinstate) && r.unserializeu8(reasonId) &&
+        r.unserializehandle(setId) && r.unserializeexpansionflags(expF, 0))
+    {
+        auto* td = new SetTakedown(takedown,
+                                   reinstate,
+                                   static_cast<PublicLinkSet::LinkDeletionReason>(reasonId),
+                                   setId,
+                                   p->timestamp,
+                                   id);
+        td->setRelevant(p->relevant);
+        td->setSeen(p->seen);
+        return td;
+    }
+
+    return nullptr;
+}
+
 #ifdef ENABLE_CHAT
 UserAlert::NewScheduledMeeting::NewScheduledMeeting(UserAlertRaw& un, unsigned int id)
     : Base(un, id)
@@ -1951,6 +2054,9 @@ void UserAlerts::add(UserAlertRaw& un)
     case name_id::ph:
         unb = new Takedown(un, nextId());
         break;
+    case name_id::ass:
+        unb = new SetTakedown(un, nextId());
+        break;
 #ifdef ENABLE_CHAT
     case name_id::mcsmp:
     {
@@ -2084,17 +2190,37 @@ void UserAlerts::add(UserAlert::Base* unb)
         }
     }
 
-    // check for previous Payment-Reminder to ignore
+    // check for previous Payment-Reminder-s to ignore
     if (!alerts.empty() && (unb->type == name_id::psts || unb->type == name_id::psts_v2) &&
         static_cast<UserAlert::Payment*>(unb)->success)
     {
         // if a successful payment is made then hide/remove any reminders received
-        for (auto& a : alerts)
+        for (auto& a: alerts)
         {
-            if (a->type == name_id::pses && a->relevant())
+            if (a->type == name_id::pses &&
+                static_cast<UserAlert::PaymentReminder*>(a)->expiryTime < unb->ts())
             {
                 a->setRelevant(false);
-                notifyAlert(a, a->seen(), a->tag);
+                a->setRemoved();
+                useralertnotify.erase(
+                    std::remove(useralertnotify.begin(), useralertnotify.end(), a),
+                    useralertnotify.end());
+            }
+        }
+    }
+
+    // check for previous Payment that would invalidate a Payment-Reminder
+    else if (!alerts.empty() && unb->type == name_id::pses)
+    {
+        // if a successful payment was made later, then ignore this reminder
+        for (auto& a: alerts)
+        {
+            if ((a->type == name_id::psts || a->type == name_id::psts_v2) &&
+                static_cast<UserAlert::Payment*>(a)->success &&
+                a->ts() > static_cast<UserAlert::PaymentReminder*>(unb)->expiryTime)
+            {
+                delete unb;
+                return;
             }
         }
     }
@@ -2822,6 +2948,10 @@ bool UserAlerts::unserializeAlert(string* d, uint32_t dbid)
 
     case name_id::ph:
         a = UserAlert::Takedown::unserialize(d, nextId());
+        break;
+
+    case name_id::ass:
+        a = UserAlert::SetTakedown::unserialize(d, nextId());
         break;
 
 #ifdef ENABLE_CHAT

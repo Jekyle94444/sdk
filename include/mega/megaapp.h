@@ -22,7 +22,10 @@
 #ifndef MEGA_APP_H
 #define MEGA_APP_H 1
 
+#include <mega/account.h>
 #include <mega/types.h>
+
+#include <cstdint>
 
 // FUSE.
 #include <mega/fuse/common/mount_event_forward.h>
@@ -38,7 +41,6 @@ struct AccountDetails;
 class MegaClient;
 class LocalPath;
 struct BusinessPlan;
-struct CurrencyData;
 struct AchievementsDetails;
 class Sync;
 struct Product;
@@ -310,10 +312,16 @@ struct MEGA_API MegaApp
     virtual void storagesum_changed(int64_t /*newsum*/) {}
 
     // global transfer queue updates
-    virtual void file_added(File*) { }
-    virtual void file_removed(File*, const Error&) { }
-    virtual void file_complete(File*) { }
-    virtual File* file_resume(string*, direction_t*) { return NULL; }
+    virtual void file_added(File*) {}
+
+    virtual void file_removed(File*, const Error&) {}
+
+    virtual void file_complete(File*) {}
+
+    virtual File* file_resume(string*, direction_t*, uint32_t)
+    {
+        return NULL;
+    }
 
     virtual void transfer_added(Transfer*) { }
     virtual void transfer_removed(Transfer*) { }
@@ -386,7 +394,7 @@ struct MEGA_API MegaApp
     virtual void notify_disconnect() { }
 
     // HTTP request finished
-    virtual void http_result(error, int, byte*, int) { }
+    virtual void http_result(error, int, byte*, m_off_t) {}
 
     // Timer ended
     virtual void timer_result(error) { }
@@ -455,6 +463,11 @@ struct MEGA_API MegaApp
 
     // Called when a mount has been added, disabled, enabled or removed.
     virtual void onFuseEvent(const fuse::MountEvent&) { }
+
+    virtual void notify_network_activity(int /* networkActivityChannel */,
+                                         int /* networkActivityType */,
+                                         int /* code */)
+    {}
 };
 } // namespace
 

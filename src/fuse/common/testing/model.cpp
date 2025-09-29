@@ -4,8 +4,8 @@
 #include <fstream>
 #include <stdexcept>
 
-#include <mega/fuse/common/error_or.h>
-#include <mega/fuse/common/node_info.h>
+#include <mega/common/error_or.h>
+#include <mega/common/node_info.h>
 #include <mega/fuse/common/testing/client.h>
 #include <mega/fuse/common/testing/cloud_path.h>
 #include <mega/fuse/common/testing/model.h>
@@ -21,6 +21,8 @@ namespace fuse
 {
 namespace testing
 {
+
+using namespace common;
 
 static Model::DirectoryNodePtr generate(const std::string& prefix,
                                         std::size_t height,
@@ -335,10 +337,10 @@ auto Model::FileNode::from(const Client&, NodeInfo info) -> NodePtr
     using std::chrono::system_clock;
 
     // Latch modification time.
-    file->mModified = system_clock::from_time_t(info.mModified);
+    file->mModified = info.mModified;
 
     // Latch size.
-    file->mSize = static_cast<std::uintmax_t>(info.mSize);
+    file->mSize = static_cast<std::uint64_t>(info.mSize);
 
     // Return file to caller.
     return file;
@@ -366,7 +368,7 @@ auto Model::FileNode::from(const fs::path& path) -> NodePtr
     std::ifstream istream(path.u8string(), std::ios::binary);
 
     // Expand buffer.
-    file->mContent.resize(file->mSize);
+    file->mContent.resize(static_cast<std::size_t>(file->mSize));
 
     // Convenience.
     auto size_ = static_cast<std::streamsize>(file->mSize);

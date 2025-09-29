@@ -2,10 +2,13 @@
 #include <cassert>
 #include <stdexcept>
 
+#include <mega/common/error_or.h>
+#include <mega/common/node_info.h>
+#include <mega/common/scoped_query.h>
+#include <mega/common/transaction.h>
 #include <mega/fuse/common/any_lock.h>
 #include <mega/fuse/common/any_lock_set.h>
 #include <mega/fuse/common/client.h>
-#include <mega/fuse/common/error_or.h>
 #include <mega/fuse/common/inode.h>
 #include <mega/fuse/common/inode_id.h>
 #include <mega/fuse/common/logging.h>
@@ -14,10 +17,7 @@
 #include <mega/fuse/common/mount_event_type.h>
 #include <mega/fuse/common/mount_info.h>
 #include <mega/fuse/common/mount_result.h>
-#include <mega/fuse/common/node_info.h>
 #include <mega/fuse/common/ref.h>
-#include <mega/fuse/common/scoped_query.h>
-#include <mega/fuse/common/transaction.h>
 #include <mega/fuse/platform/mount.h>
 #include <mega/fuse/platform/mount_db.h>
 #include <mega/fuse/platform/service_context.h>
@@ -28,6 +28,8 @@ namespace mega
 {
 namespace fuse
 {
+
+using namespace common;
 
 MountDB::Queries::Queries(Database& mDatabase)
   : mAddMount(mDatabase.query())
@@ -99,7 +101,6 @@ MountResult MountDB::check(const MountInfo& info)
 {
     // Convenience.
     auto& handle = info.mHandle;
-    auto& name = info.name();
 
     // User's specified a bogus node handle.
     if (handle.isUndef())
@@ -108,14 +109,6 @@ MountResult MountDB::check(const MountInfo& info)
                    toNodeHandle(handle).c_str());
 
         return MOUNT_REMOTE_UNKNOWN;
-    }
-
-    // User's specified a bogus name.
-    if (name.empty())
-    {
-        FUSEError1("No name specified");
-
-        return MOUNT_NO_NAME;
     }
 
     // Check that the specified cloud node exists.
@@ -159,8 +152,8 @@ void MountDB::doDeinitialize()
 void MountDB::enable()
 try
 {
-    mContext.mInodeDB.current();
-    mContext.mFileCache.current();
+    inodeDB().current();
+    fileCache().current();
 
     // What mounts should we try and enable?
     std::vector<std::string> mounts;
@@ -177,7 +170,7 @@ try
 
         // Collect names of enabled mounts.
         for ( ; query; ++query)
-            mounts.emplace_back(query.field("name"));
+            mounts.emplace_back(query.field("name").get<std::string>());
     }
 
     // Try and enable each mount.
@@ -191,15 +184,14 @@ try
         // Try and enable the mount.
         event.mResult = enable(name, false);
 
-        // Emit event.
-        client().emitEvent(event);
-
         // Couldn't enable the mount.
         if (event.mResult != MOUNT_SUCCESS)
         {
             FUSEWarningF("Unable to enable persistent mount \"%s\" due to error: %s",
                          name.c_str(),
                          toString(event.mResult));
+
+            emitEvent(client(), event);
 
             // Try and enable the next mount.
             continue;
@@ -382,7 +374,7 @@ try
     auto query = transaction.query(mQueries.mGetMountInodeByName);
 
     // Make sure the name isn't already associated with a mount.
-    query.param(":name") = info.name();
+    query.param(":name").set(info.name());
     query.execute();
 
     // A mount's already associated with this name.
@@ -513,7 +505,7 @@ void MountDB::disable(MountDisabledCallback callback,
         event.mResult = result;
 
         // Emit the event.
-        client().emitEvent(event);
+        fuse::emitEvent(client(), event);
 
         // Forward result to callback.
         auto wrapper = [result](MountDisabledCallback& callback,
@@ -534,7 +526,7 @@ void MountDB::disable(MountDisabledCallback callback,
         auto query = transaction.query(mQueries.mGetMountStartupStateByName);
 
         // Query the mount's startup state.
-        query.param(":name") = name;
+        query.param(":name").set(name);
         query.execute();
 
         // No mount associated with specified path.
@@ -546,8 +538,8 @@ void MountDB::disable(MountDisabledCallback callback,
         }
 
         // Latch startup state.
-        bool enableAtStartup = query.field("enable_at_startup");
-        bool persistent = query.field("persistent");
+        bool enableAtStartup = query.field("enable_at_startup").get<bool>();
+        bool persistent = query.field("persistent").get<bool>();
 
         enableAtStartup = enableAtStartup && !remember;
         persistent = persistent || remember;
@@ -555,9 +547,9 @@ void MountDB::disable(MountDisabledCallback callback,
         // Update the mount's startup state.
         query = transaction.query(mQueries.mSetMountStartupStateByName);
 
-        query.param(":enable_at_startup") = enableAtStartup;
-        query.param(":name") = name;
-        query.param(":persistent") = persistent;
+        query.param(":enable_at_startup").set(enableAtStartup);
+        query.param(":name").set(name);
+        query.param(":persistent").set(persistent);
 
         query.execute();
 
@@ -674,14 +666,23 @@ try
     auto lock = lockAll(mContext.mDatabase, *this);
 
     // The mount associated with this path is already enabled.
-    if (mount(name))
-        return MOUNT_SUCCESS;
+    //
+    // NOTE: We're calling enabled() manually to force the generation of a
+    // MOUNT_ENABLED event. This is necessary because we want to generate
+    // this event whenever enabling a mount succeeds but normally, a mount
+    // will only generate the event when it becomes functional.
+    //
+    // That is, when you enable a mount that's already enabled, it's not
+    // transitioning into a functional state so, we have to generate the
+    // event manually.
+    if (auto mount = this->mount(name))
+        return mount->enabled(), MOUNT_SUCCESS;
 
     auto transaction = mContext.mDatabase.transaction();
     auto query = transaction.query(mQueries.mGetMountByName);
 
     // Check if the mount's present in the database.
-    query.param(":name") = name;
+    query.param(":name").set(name);
     query.execute();
 
     // Mount's not in the database.
@@ -704,9 +705,9 @@ try
     // Update the mount's startup state.
     query = transaction.query(mQueries.mSetMountStartupStateByName);
 
-    query.param(":enable_at_startup") = flags.mEnableAtStartup;
-    query.param(":name") = name;
-    query.param(":persistent") = flags.mPersistent;
+    query.param(":enable_at_startup").set(flags.mEnableAtStartup);
+    query.param(":name").set(name);
+    query.param(":persistent").set(flags.mPersistent);
 
     query.execute();
 
@@ -772,8 +773,8 @@ try
     // Release lock.
     lock.unlock();
 
-    // Let the mount know it's been enabled.
-    mount->enabled();
+    // Flush any files modified by this mount.
+    fileCache().flush(*mount, inodeDB().modified(mount->handle()));
 
     // Mount's enabled.
     return MOUNT_SUCCESS;
@@ -809,6 +810,21 @@ TaskExecutorFlags MountDB::executorFlags() const
     return mContext.serviceFlags().mMountExecutorFlags;
 }
 
+void MountDB::fileExplorerView(FileExplorerView view)
+{
+    mFileExplorerView = view;
+}
+
+FileExplorerView MountDB::fileExplorerView() const
+{
+    return mFileExplorerView;
+}
+
+FileCache& MountDB::fileCache()
+{
+    return mContext.mFileCache;
+}
+
 MountResult MountDB::flags(const std::string& currentName,
                            const MountFlags& flags)
 try
@@ -816,12 +832,8 @@ try
     auto guard = lockAll(mContext.mDatabase, *this);
 
     // User's specified an invalid name.
-    if (flags.mName.empty())
-    {
-        FUSEError1("No name specified");
-
-        return MOUNT_NO_NAME;
-    }
+    if (const auto ret = checkName(flags.mName); ret != MOUNT_SUCCESS)
+        return ret;
 
     auto transaction = mContext.mDatabase.transaction();
     auto query = transaction.query(mQueries.mGetMountByName);
@@ -829,7 +841,7 @@ try
     // Make sure the mount's new name, if any, is unique.
     if (currentName != flags.mName)
     {
-        query.param(":name") = flags.mName;
+        query.param(":name").set(flags.mName);
         query.execute();
 
         // Mount's new name isn't unique.
@@ -847,7 +859,7 @@ try
 
     flags.serialize(query);
 
-    query.param(":current_name") = currentName;
+    query.param(":current_name").set(currentName);
     query.execute();
 
     // No mount is associated with this path.
@@ -893,7 +905,7 @@ try
     auto transaction = mContext.mDatabase.transaction();
     auto query = transaction.query(mQueries.mGetMountFlagsByName);
 
-    query.param(":name") = name;
+    query.param(":name").set(name);
     query.execute();
 
     // No mount's associated with the specified path.
@@ -929,7 +941,7 @@ try
     auto transaction = mContext.mDatabase.transaction();
     auto query = transaction.query(mQueries.mGetMountByName);
 
-    query.param(":name") = name;
+    query.param(":name").set(name);
     query.execute();
 
     // No mount associated with the specified path.
@@ -998,6 +1010,11 @@ catch (std::runtime_error& exception)
     return MountInfoVector();
 }
 
+InodeDB& MountDB::inodeDB()
+{
+    return mContext.mInodeDB;
+}
+
 NormalizedPath MountDB::path(const std::string& name) const
 try
 {
@@ -1009,11 +1026,11 @@ try
     auto transaction = mContext.mDatabase.transaction();
     auto query = transaction.query(mQueries.mGetMountPathByName);
 
-    query.param(":name") = name;
+    query.param(":name").set(name);
     query.execute();
 
     if (query && !query.field("path").null())
-        return query.field("path").path();
+        return query.field("path").get<LocalPath>();
 
     return NormalizedPath();
 }
@@ -1061,7 +1078,7 @@ try
     auto transaction = mContext.mDatabase.transaction();
     auto query = transaction.query(mQueries.mRemoveMountByName);
 
-    query.param(":name") = name;
+    query.param(":name").set(name);
     query.execute();
 
     transaction.commit();

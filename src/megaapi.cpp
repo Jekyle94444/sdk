@@ -27,6 +27,8 @@
 
 #include <mega/fuse/common/service.h>
 
+#include <cstdint>
+
 namespace
 {
 inline const char* nullToEmpty(const char* param)
@@ -628,9 +630,33 @@ bool MegaNode::isForeign()
     return false;
 }
 
+bool MegaNode::isCreditCardNode() const
+{
+    return false;
+}
+
 bool MegaNode::isPasswordNode() const
 {
     return false;
+}
+
+bool MegaNode::isPasswordManagerNode() const
+{
+    return false;
+}
+
+MegaNode::CreditCardNodeData*
+    MegaNode::CreditCardNodeData::createInstance(const char* cardNumber,
+                                                 const char* notes,
+                                                 const char* cardHolderName,
+                                                 const char* cvv,
+                                                 const char* expirationDate)
+{
+    return new MegaNodePrivate::CCNDataPrivate(cardNumber,
+                                               notes,
+                                               cardHolderName,
+                                               cvv,
+                                               expirationDate);
 }
 
 MegaNode::PasswordNodeData::TotpData* MegaNode::PasswordNodeData::TotpData::createRemovalInstance()
@@ -657,6 +683,11 @@ MegaNode::PasswordNodeData* MegaNode::PasswordNodeData::createInstance(const cha
                                                                        const TotpData* totpData)
 {
     return new MegaNodePrivate::PNDataPrivate(pwd, notes, url, userName, totpData);
+}
+
+MegaNode::CreditCardNodeData* MegaNode::getCreditCardData() const
+{
+    return NULL;
 }
 
 MegaNode::PasswordNodeData* MegaNode::getPasswordData() const
@@ -1324,6 +1355,11 @@ unsigned MegaTransfer::getStage() const
     return 0;
 }
 
+uint32_t MegaTransfer::getUniqueId() const
+{
+    return 0;
+}
+
 int MegaTransfer::getTag() const
 {
 	return 0;
@@ -1603,6 +1639,10 @@ const char* MegaError::getErrorString(int errorCode, ErrorContexts context)
                    "the admin user and tries to perform a disallowed command (currently u and p)";
         case LOCAL_ENOSPC:
             return "Insufficient disk space";
+        case LOCAL_ETIMEOUT:
+            return "Local timeout error";
+        case LOCAL_ENETWORK:
+            return "Local network error";
         case PAYMENT_ECARD:
             return "Credit card rejected";
         case PAYMENT_EBILLING:
@@ -2462,9 +2502,16 @@ void MegaApi::querySignupLink(const char* link, MegaRequestListener *listener)
     pImpl->querySignupLink(link, listener);
 }
 
-void MegaApi::confirmAccount(const char* link, const char *password, MegaRequestListener *listener)
+void MegaApi::confirmAccount(const char* link, MegaRequestListener* listener)
 {
-    pImpl->confirmAccount(link, password, listener);
+    pImpl->confirmAccount(link, listener);
+}
+
+void MegaApi::confirmAccount(const char* link,
+                             const char* /*password*/,
+                             MegaRequestListener* listener)
+{
+    pImpl->confirmAccount(link, listener);
 }
 
 void MegaApi::resetPassword(const char *email, bool hasMasterKey, MegaRequestListener *listener)
@@ -2544,13 +2591,33 @@ void MegaApi::getPasswordManagerBase(MegaRequestListener *listener)
 
 bool MegaApi::isPasswordNodeFolder(MegaHandle node) const
 {
-    return pImpl->isPasswordNodeFolder(node);
+    return pImpl->isPasswordManagerNodeFolder(node);
+}
+
+bool MegaApi::isPasswordManagerNodeFolder(MegaHandle node) const
+{
+    return pImpl->isPasswordManagerNodeFolder(node);
+}
+
+void MegaApi::createCreditCardNode(const char* name,
+                                   const MegaNode::CreditCardNodeData* data,
+                                   MegaHandle parent,
+                                   MegaRequestListener* listener)
+{
+    pImpl->createCreditCardNode(name, data, parent, listener);
 }
 
 void MegaApi::createPasswordNode(const char* name, const MegaNode::PasswordNodeData* data,
                                  MegaHandle parent, MegaRequestListener* listener)
 {
     pImpl->createPasswordNode(name, data, parent, listener);
+}
+
+void MegaApi::updateCreditCardNode(MegaHandle node,
+                                   const MegaNode::CreditCardNodeData* newData,
+                                   MegaRequestListener* listener)
+{
+    pImpl->updateCreditCardNode(node, newData, listener);
 }
 
 void MegaApi::updatePasswordNode(MegaHandle node, const MegaNode::PasswordNodeData* newData,
@@ -2723,6 +2790,13 @@ const char *MegaApi::buildPublicLink(const char *publicHandle, const char *key, 
 void MegaApi::getThumbnail(MegaNode* node, const char *dstFilePath, MegaRequestListener *listener)
 {
     pImpl->getThumbnail(node, dstFilePath, listener);
+}
+
+void MegaApi::getThumbnail(MegaHandle handle,
+                           const char* dstFilePath,
+                           MegaRequestListener* listener)
+{
+    pImpl->getThumbnail(handle, dstFilePath, listener);
 }
 
 void MegaApi::cancelGetThumbnail(MegaNode* node, MegaRequestListener *listener)
@@ -2915,6 +2989,14 @@ void MegaApi::setUnshareableNodeCoordinates(MegaNode *node, double latitude, dou
     pImpl->setNodeCoordinates(node, true, latitude, longitude, listener);
 }
 
+void MegaApi::setUnshareableNodeCoordinates(MegaHandle nodeHandle,
+                                            double latitude,
+                                            double longitude,
+                                            MegaRequestListener* listener)
+{
+    pImpl->setNodeCoordinates(nodeHandle, true, latitude, longitude, listener);
+}
+
 void MegaApi::setNodeDescription(MegaNode* node, const char* description, MegaRequestListener* listener)
 {
     pImpl->setNodeDescription(node, description, listener);
@@ -3016,7 +3098,12 @@ MegaIntegerList* MegaApi::getOverquotaWarningsTs()
 
 void MegaApi::getPricing(MegaRequestListener *listener)
 {
-    pImpl->getPricing(listener);
+    pImpl->getPricing(std::nullopt, listener);
+}
+
+void MegaApi::getPricing(const char* countryCode, MegaRequestListener* listener)
+{
+    pImpl->getPricing(countryCode, listener);
 }
 
 void MegaApi::getPaymentId(MegaHandle productHandle, MegaRequestListener *listener)
@@ -3448,6 +3535,11 @@ void MegaApi::pauseTransferByTag(int transferTag, bool pause, MegaRequestListene
     pImpl->pauseTransfer(transferTag, pause, listener);
 }
 
+void MegaApi::resumeTransfersForNotLoggedInInstance()
+{
+    pImpl->resumeTransfersForNotLoggedInInstance();
+}
+
 bool MegaApi::areTransfersPaused(int direction)
 {
     return pImpl->areTransfersPaused(direction);
@@ -3464,6 +3556,16 @@ void MegaApi::setMaxConnections(int direction, int connections, MegaRequestListe
 void MegaApi::setMaxConnections(int connections, MegaRequestListener *listener)
 {
     pImpl->setMaxConnections(-1,  connections, listener);
+}
+
+void MegaApi::getMaxUploadConnections(MegaRequestListener* const listener)
+{
+    pImpl->getMaxUploadConnections(listener);
+}
+
+void MegaApi::getMaxDownloadConnections(MegaRequestListener* const listener)
+{
+    pImpl->getMaxDownloadConnections(listener);
 }
 
 void MegaApi::setDownloadMethod(int method)
@@ -3549,6 +3651,11 @@ MegaTransferList *MegaApi::getTransfers()
 MegaTransferList *MegaApi::getStreamingTransfers()
 {
     return pImpl->getStreamingTransfers();
+}
+
+MegaTransfer* MegaApi::getTransferByUniqueId(uint32_t transferUniqueId) const
+{
+    return pImpl->getTransferByUniqueId(transferUniqueId);
 }
 
 MegaTransfer *MegaApi::getTransferByTag(int transferTag)
@@ -4126,6 +4233,11 @@ int MegaApi::getAccess(MegaNode* megaNode)
     return pImpl->getAccess(megaNode);
 }
 
+int MegaApi::getAccess(MegaHandle handle)
+{
+    return pImpl->getAccess(handle);
+}
+
 void MegaApi::getRecentActionsAsync(unsigned days, unsigned maxnodes, MegaRequestListener *listener)
 {
     pImpl->getRecentActionsAsync(days, maxnodes, listener);
@@ -4228,6 +4340,11 @@ bool MegaApi::setLanguage(const char *languageCode)
     return pImpl->setLanguage(languageCode);
 }
 
+int MegaApi::enableSearchDBIndexes(bool enable)
+{
+    return pImpl->enableSearchDBIndexes(enable);
+}
+
 const char* MegaApi::generateViewId()
 {
     return strdup(pImpl->generateViewId().c_str());
@@ -4248,9 +4365,9 @@ void MegaApi::setFileVersionsOption(bool disable, MegaRequestListener *listener)
     pImpl->setFileVersionsOption(disable, listener);
 }
 
-void MegaApi::setContactLinksOption(bool disable, MegaRequestListener *listener)
+void MegaApi::setContactLinksOption(bool enable, MegaRequestListener* listener)
 {
-    pImpl->setContactLinksOption(disable, listener);
+    pImpl->setContactLinksOption(enable, listener);
 }
 
 void MegaApi::getFileVersionsOption(MegaRequestListener *listener)
@@ -6086,6 +6203,13 @@ void MegaApi::runNetworkConnectivityTest(MegaRequestListener* listener)
     pImpl->runNetworkConnectivityTest(listener);
 }
 
+void MegaApi::getSubscriptionCancellationDetails(unsigned int gatewayId,
+                                                 const char* originalTransactionId,
+                                                 MegaRequestListener* listener)
+{
+    pImpl->getSubscriptionCancellationDetails(originalTransactionId, gatewayId, listener);
+}
+
 /* END MEGAAPI */
 
 MegaHashSignature::MegaHashSignature(const char *base64Key)
@@ -7503,6 +7627,11 @@ const char *MegaEvent::getEventString() const
     return NULL;
 }
 
+std::optional<int64_t> MegaEvent::getNumber(const std::string& /* key */) const
+{
+    return std::nullopt;
+}
+
 MegaHandleList *MegaHandleList::createInstance()
 {
     return new MegaHandleListPrivate();
@@ -7563,6 +7692,11 @@ MegaAchievementsDetails::~MegaAchievementsDetails()
 long long MegaAchievementsDetails::getBaseStorage()
 {
     return 0;
+}
+
+bool MegaAchievementsDetails::isValidClass(int /*class_id*/)
+{
+    return false;
 }
 
 long long MegaAchievementsDetails::getClassStorage(int /*class_id*/)

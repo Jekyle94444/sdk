@@ -10,11 +10,17 @@ macro(load_sdklib_libraries)
         if(WIN32)
             target_link_libraries(SDKlib PUBLIC unofficial-sodium::sodium)  # TODO: Private for SDK core
         else()
-            target_link_libraries(SDKlib PRIVATE unofficial-sodium::sodium unofficial-sodium::sodium_config_public)
+            target_link_libraries(SDKlib PRIVATE unofficial-sodium::sodium)
         endif()
 
-        find_package(unofficial-sqlite3 REQUIRED)
-        target_link_libraries(SDKlib PRIVATE unofficial::sqlite3::sqlite3)
+        if(IOS)
+            # IOS requires the system sqlite3 libray
+            find_package(SQLite3 REQUIRED)
+            target_link_libraries(SDKlib PRIVATE SQLite::SQLite3)
+        else()
+            find_package(unofficial-sqlite3 REQUIRED)
+            target_link_libraries(SDKlib PRIVATE unofficial::sqlite3::sqlite3)
+        endif()
 
         find_package(CURL REQUIRED)
         target_link_libraries(SDKlib PRIVATE CURL::libcurl)
@@ -36,13 +42,14 @@ macro(load_sdklib_libraries)
             endif()
         endif()
 
-        if(USE_MEDIAINFO)
+        if(ENABLE_MEDIA_FILE_METADATA)
             # MediaInfo is not setting libzen dependency correctly. Preload it.
             find_package(ZenLib CONFIG REQUIRED)
             target_link_libraries(SDKlib PRIVATE zen)
 
             find_package(MediaInfoLib REQUIRED)
             target_link_libraries(SDKlib PRIVATE mediainfo)
+            set(USE_MEDIAINFO 1)
         endif()
 
         if(USE_FREEIMAGE)
@@ -60,7 +67,7 @@ macro(load_sdklib_libraries)
 
         if(USE_LIBUV)
             find_package(libuv REQUIRED)
-            target_link_libraries(SDKlib PRIVATE $<IF:$<TARGET_EXISTS:uv_a>,uv_a,uv>)
+            target_link_libraries(SDKlib PRIVATE $<IF:$<TARGET_EXISTS:libuv::uv_a>,libuv::uv_a,libuv::uv>)
             set(HAVE_LIBUV 1)
         endif()
 
@@ -111,9 +118,10 @@ macro(load_sdklib_libraries)
             target_link_libraries(SDKlib PRIVATE OpenSSL::SSL OpenSSL::Crypto)
         endif()
 
-        if(USE_MEDIAINFO)
+        if(ENABLE_MEDIA_FILE_METADATA)
             pkg_check_modules(mediainfo REQUIRED IMPORTED_TARGET libmediainfo)
             target_link_libraries(SDKlib PRIVATE PkgConfig::mediainfo)
+            set(USE_MEDIAINFO 1)
         endif()
 
         if(USE_FREEIMAGE)

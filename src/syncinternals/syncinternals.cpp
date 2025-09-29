@@ -51,7 +51,8 @@ NodeMatchByFSIDResult
     }
 
     // IMPORTANT: Ensure that we are not mixing two different files whose FSIDs have been reused.
-    if (source.nodetype == FILENODE && target.fingerprint != source.fingerprint)
+    if (source.nodetype == FILENODE && target.fingerprint != source.fingerprint &&
+        target.fingerprint != source.realFingerprint)
         return NodeMatchByFSIDResult::DifferentFingerprint;
 
     return NodeMatchByFSIDResult::Matched;
@@ -62,10 +63,14 @@ bool FindLocalNodeByFSIDPredicate::operator()(LocalNode& localNode)
     if (mEarlyExit)
         return false;
 
-    const NodeMatchByFSIDAttributes sourceNodeAttributes{localNode.type,
-                                                         localNode.sync->fsfp(),
-                                                         localNode.sync->cloudRootOwningUser,
-                                                         getFingerprint(localNode)};
+    const NodeMatchByFSIDAttributes sourceNodeAttributes{
+        localNode.type,
+        localNode.sync->fsfp(),
+        localNode.sync->cloudRootOwningUser,
+        getFingerprint(localNode),
+        (mScannedOrSyncedCtxt == ScannedOrSyncedContext::SCANNED) ?
+            localNode.realScannedFingerprint :
+            localNode.syncedFingerprint};
     const SourceNodeMatchByFSIDContext sourceContext{isFsidReused(localNode),
                                                      localNode.exclusionState()};
 
@@ -314,8 +319,9 @@ void clientUpload(MegaClient& mc,
     // If we found a node to clone with a valid key, call putNodesToCloneNode.
     if (auto cloneNode = findCloneNodeCandidate(mc, *upload); cloneNode)
     {
-        LOG_debug << "Cloning node rather than sync uploading: " << cloneNode->displaypath()
-                  << " for " << upload->sourceLocalname;
+        const auto displayPath = cloneNode->displaypath();
+        LOG_debug << "Cloning node rather than sync uploading: " << displayPath << " for "
+                  << upload->sourceLocalname;
 
         // completion function is supplied to putNodes command
         upload->sendPutnodesToCloneNode(&mc, ovHandleIfShortcut, cloneNode);

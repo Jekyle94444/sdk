@@ -935,15 +935,15 @@ using namespace mega;
     }
 }
 
-- (void)confirmAccountWithLink:(NSString *)link password:(NSString *)password {
+- (void)confirmAccountWithLink:(NSString *)link {
     if (self.megaApi) {
-        self.megaApi->confirmAccount(link.UTF8String, password.UTF8String);
+        self.megaApi->confirmAccount(link.UTF8String);
     }
 }
 
-- (void)confirmAccountWithLink:(NSString *)link password:(NSString *)password delegate:(id<MEGARequestDelegate>)delegate {
+- (void)confirmAccountWithLink:(NSString *)link delegate:(id<MEGARequestDelegate>)delegate {
     if (self.megaApi) {
-        self.megaApi->confirmAccount(link.UTF8String, password.UTF8String, [self createDelegateMEGARequestListener:delegate singleListener:YES]);
+        self.megaApi->confirmAccount(link.UTF8String, [self createDelegateMEGARequestListener:delegate singleListener:YES]);
     }
 }
 
@@ -980,6 +980,12 @@ using namespace mega;
 - (void)confirmResetPasswordWithLink:(NSString *)link newPassword:(NSString *)newPassword masterKey:(nullable NSString *)masterKey {
     if (self.megaApi) {
         self.megaApi->confirmResetPassword(link.UTF8String, newPassword.UTF8String, masterKey.UTF8String);
+    }
+}
+
+- (void)checkRecoveryKey:(NSString *)link recoveryKey:(NSString *)recoveryKey delegate:(id<MEGARequestDelegate>)delegate {
+    if (self.megaApi) {
+        self.megaApi->checkRecoveryKey(link.UTF8String, recoveryKey.UTF8String, [self createDelegateMEGARequestListener:delegate singleListener:YES queueType:ListenerQueueTypeCurrent]);
     }
 }
 
@@ -1746,9 +1752,15 @@ using namespace mega;
     }
 }
 
-- (void)setUnshareableNodeCoordinates:(MEGANode *)node latitude:(NSNumber *)latitude longitude:(NSNumber *)longitude delegate:(id<MEGARequestDelegate>)delegate {
+- (void)setUnshareableNodeCoordinates:(MEGANode *)node latitude:(double)latitude longitude:(double)longitude delegate:(id<MEGARequestDelegate>)delegate {
     if (self.megaApi) {
-        self.megaApi->setUnshareableNodeCoordinates(node.getCPtr, (latitude ? latitude.doubleValue : MegaNode::INVALID_COORDINATE), (longitude ? longitude.doubleValue : MegaNode::INVALID_COORDINATE), [self createDelegateMEGARequestListener:delegate singleListener:YES]);
+        self.megaApi->setUnshareableNodeCoordinates(node.getCPtr, latitude, longitude , [self createDelegateMEGARequestListener:delegate singleListener:YES]);
+    }
+}
+
+- (void)setUnshareableNodeCoordinates:(MEGANode *)node latitude:(double)latitude longitude:(double)longitude {
+    if (self.megaApi) {
+        self.megaApi->setUnshareableNodeCoordinates(node.getCPtr, latitude, longitude);
     }
 }
 
@@ -1795,6 +1807,18 @@ using namespace mega;
 }
 
 #pragma mark - Attributes Requests
+
+- (void)getThumbnailWithNodeHandle:(uint64_t)nodeHandle destinationFilePath:(NSString *)destinationFilePath delegate:(id<MEGARequestDelegate>)delegate {
+    if (self.megaApi) {
+        self.megaApi->getThumbnail(nodeHandle, destinationFilePath.UTF8String, [self createDelegateMEGARequestListener:delegate singleListener:YES]);
+    }
+}
+
+- (void)getThumbnailWithNodeHandle:(uint64_t)nodeHandle destinationFilePath:(NSString *)destinationFilePath {
+    if (self.megaApi) {
+        self.megaApi->getThumbnail(nodeHandle, destinationFilePath.UTF8String);
+    }
+}
 
 - (void)getThumbnailNode:(MEGANode *)node destinationFilePath:(NSString *)destinationFilePath delegate:(id<MEGARequestDelegate>)delegate {
     if (self.megaApi) {
@@ -3279,15 +3303,9 @@ using namespace mega;
     }
 }
 
-- (void)setContactLinksOptionDisable:(BOOL)disable delegate:(id<MEGARequestDelegate>)delegate {
+- (void)setContactLinksOption:(BOOL)enable delegate:(id<MEGARequestDelegate>)delegate {
     if (self.megaApi) {
-        self.megaApi->setContactLinksOption(disable, [self createDelegateMEGARequestListener:delegate singleListener:YES]);
-    }
-}
-
-- (void)setContactLinksOptionDisable:(BOOL)disable {
-    if (self.megaApi) {
-        self.megaApi->setContactLinksOption(disable);
+        self.megaApi->setContactLinksOption(enable, [self createDelegateMEGARequestListener:delegate singleListener:YES]);
     }
 }
 
@@ -3986,6 +4004,12 @@ using namespace mega;
     }
 }
 
+- (void)getSubscriptionCancellationDetailsWithGateway:(MEGAPaymentMethod)gateway originalTransactionId:(nullable NSString *)originalTransactionId delegate:(id<MEGARequestDelegate>)delegate {
+    if (self.megaApi) {
+        self.megaApi->getSubscriptionCancellationDetails((int)gateway, originalTransactionId.UTF8String, [self createDelegateMEGARequestListener:delegate singleListener:YES queueType:ListenerQueueTypeCurrent]);
+    }
+}
+
 #pragma mark - Password Manager
 
 - (void)getPasswordManagerBaseWithDelegate:(id<MEGARequestDelegate>)delegate {
@@ -3994,10 +4018,10 @@ using namespace mega;
     }
 }
 
-- (BOOL)isPasswordNodeFolderWithHandle:(MEGAHandle)node {
+- (BOOL)isPasswordManagerNodeFolderWithHandle:(MEGAHandle)node {
     if (self.megaApi == nil) return NO;
 
-    return self.megaApi->isPasswordNodeFolder(node);
+    return self.megaApi->isPasswordManagerNodeFolder(node);
 }
 
 - (void)createPasswordNodeWithName:(NSString *)name data:(PasswordNodeData *)data parent:(MEGAHandle)parent delegate:(id<MEGARequestDelegate>)delegate {
@@ -4017,6 +4041,20 @@ using namespace mega;
         MegaNode::PasswordNodeData *passwordNodeData = MegaNode::PasswordNodeData::createInstance(newData.password.UTF8String, newData.notes.UTF8String, newData.url.UTF8String, newData.userName.UTF8String, totpData);
         
         self.megaApi->updatePasswordNode(node, passwordNodeData, [self createDelegateMEGARequestListener:delegate singleListener:YES]);
+    }
+}
+
+- (void)createCreditCardNodeWithName:(NSString *)name data:(MEGACreditCardNodeData *)data parent:(MEGAHandle)parent delegate:(id<MEGARequestDelegate>)delegate {
+    if (self.megaApi) {
+        MegaNode::CreditCardNodeData *creditCardNodeData = MegaNode::CreditCardNodeData::createInstance(data.cardNumber.UTF8String, data.notes.UTF8String, data.cardHolderName.UTF8String, data.cvv.UTF8String, data.expirationDate.UTF8String);
+        self.megaApi->createCreditCardNode(name.UTF8String, creditCardNodeData, parent, [self createDelegateMEGARequestListener:delegate singleListener:YES queueType:ListenerQueueTypeCurrent]);
+    }
+}
+
+- (void)updateCreditCardNodeWithHandle:(MEGAHandle)node newData:(MEGACreditCardNodeData *)newData delegate:(id<MEGARequestDelegate>)delegate {
+    if (self.megaApi) {
+        MegaNode::CreditCardNodeData *creditCardNodeData = MegaNode::CreditCardNodeData::createInstance(newData.cardNumber.UTF8String, newData.notes.UTF8String, newData.cardHolderName.UTF8String, newData.cvv.UTF8String, newData.expirationDate.UTF8String);
+        self.megaApi->updateCreditCardNode(node, creditCardNodeData, [self createDelegateMEGARequestListener:delegate singleListener:YES queueType:ListenerQueueTypeCurrent]);
     }
 }
 

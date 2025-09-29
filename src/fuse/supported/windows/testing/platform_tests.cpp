@@ -1,6 +1,6 @@
-#include <mega/fuse/common/error_or.h>
+#include <mega/common/error_or.h>
+#include <mega/common/node_info.h>
 #include <mega/fuse/common/inode_info.h>
-#include <mega/fuse/common/node_info.h>
 #include <mega/fuse/common/testing/client.h>
 #include <mega/fuse/common/testing/cloud_path.h>
 #include <mega/fuse/common/testing/directory.h>
@@ -30,6 +30,8 @@ using platform::SecurityIdentifier;
 using platform::fromWideString;
 using platform::readOnlySecurityDescriptor;
 using platform::readWriteSecurityDescriptor;
+
+using namespace common;
 
 union FileInfo
 {
@@ -392,6 +394,22 @@ TEST_P(FUSEPlatformTests, get_file_security_succeeds)
     computed = GetFileSecurityP(MountPathW() / "sf0");
     EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
     EXPECT_EQ(toString(computed), expected);
+}
+
+TEST_P(FUSEPlatformTests, get_volume_information_succeeds)
+{
+    auto info = GetVolumeInformationByPath(MountPathW());
+    EXPECT_TRUE(info);
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    if (HasFailure())
+        return;
+
+    EXPECT_EQ(info->mFilesystemName, "WinFsp");
+
+    using ::testing::StrCaseEq;
+
+    EXPECT_THAT(info->mVolumeName, StrCaseEq("s"));
 }
 
 TEST_P(FUSEPlatformTests, move_fails_when_below_file)
@@ -1112,17 +1130,63 @@ TEST_P(FUSEPlatformTests, remove_directory_succeeds)
     EXPECT_FALSE(fs::exists(MountPathW() / "sd0" / "sd0d0", error));
 }
 
-TEST_P(FUSEPlatformTests, set_attributes_fails_when_attributes_changed)
+TEST_P(FUSEPlatformTests, set_attributes_fails_when_unsupported_attributes_changed)
 {
     auto before = GetFileAttributesP(MountPathW() / "sf0");
     EXPECT_NE(before, INVALID_FILE_ATTRIBUTES);
     EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
 
-    EXPECT_FALSE(SetFileAttributesP(MountPathW() / "sf0",
-                                    FILE_ATTRIBUTE_READONLY));
+    EXPECT_FALSE(SetFileAttributesP(MountPathW() / "sf0", FILE_ATTRIBUTE_OFFLINE));
     EXPECT_EQ(GetLastError(), ERROR_ACCESS_DENIED);
 
     SetLastError(ERROR_SUCCESS);
+
+    auto after = GetFileAttributesP(MountPathW() / "sf0");
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+    EXPECT_EQ(after, before);
+}
+
+TEST_P(FUSEPlatformTests, set_attributes_on_folder)
+{
+    auto before = GetFileAttributesP(MountPathW() / "sd0");
+    EXPECT_NE(before, INVALID_FILE_ATTRIBUTES);
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_TRUE(
+        SetFileAttributesP(MountPathW() / "sd0", FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_ARCHIVE));
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_TRUE(SetFileAttributesP(MountPathW() / "sd0", FILE_ATTRIBUTE_NORMAL));
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_FALSE(SetFileAttributesP(MountPathW() / "sd0", FILE_ATTRIBUTE_OFFLINE));
+    EXPECT_EQ(GetLastError(), ERROR_ACCESS_DENIED);
+
+    SetLastError(ERROR_SUCCESS);
+
+    auto after = GetFileAttributesP(MountPathW() / "sd0");
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+    EXPECT_EQ(after, before);
+}
+
+TEST_P(FUSEPlatformTests, set_attributes_succeeds_but_attributes_not_changed)
+{
+    auto before = GetFileAttributesP(MountPathW() / "sf0");
+    EXPECT_NE(before, INVALID_FILE_ATTRIBUTES);
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_TRUE(SetFileAttributesP(MountPathW() / "sf0", FILE_ATTRIBUTE_READONLY));
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_TRUE(SetFileAttributesP(MountPathW() / "sf0", FILE_ATTRIBUTE_HIDDEN));
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_TRUE(
+        SetFileAttributesP(MountPathW() / "sf0", FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_ARCHIVE));
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
+
+    EXPECT_TRUE(SetFileAttributesP(MountPathW() / "sf0", FILE_ATTRIBUTE_NORMAL));
+    EXPECT_EQ(GetLastError(), ERROR_SUCCESS);
 
     auto after = GetFileAttributesP(MountPathW() / "sf0");
     EXPECT_EQ(GetLastError(), ERROR_SUCCESS);

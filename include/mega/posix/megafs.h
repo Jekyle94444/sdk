@@ -47,8 +47,7 @@ namespace mega {
 
 namespace detail {
 
-using AdjustBasePathResult =
-  IOS_OR_POSIX(std::string, const std::string&);
+using AdjustBasePathResult = std::string;
 
 AdjustBasePathResult adjustBasePath(const LocalPath& path);
 
@@ -100,6 +99,9 @@ public:
     void osversion(string*, bool includeArchitecture) const override;
     void statsid(string*) const override;
 
+    // Returns true if provided error as param is considered a transient error (an error lasting
+    // only for a short period of time). Otherwise returns false
+    static bool isTransient(const int e);
     static void emptydirlocal(const LocalPath&, dev_t = 0);
 
     int getdefaultfilepermissions() override;
@@ -194,7 +196,11 @@ private:
 
 #ifdef __linux__
 
+#ifndef __ANDROID__
 #define FSACCESS_CLASS LinuxFileSystemAccess
+#else
+#define FSACCESS_CLASS AndroidFileSystemAccess
+#endif
 
 class LinuxFileSystemAccess
   : public PosixFileSystemAccess
@@ -244,9 +250,7 @@ public:
 
     ~LinuxDirNotify();
 
-    AddWatchResult addWatch(LocalNode& node,
-                            const LocalPath& path,
-                            handle fsid);
+    virtual AddWatchResult addWatch(LocalNode& node, const LocalPath& path, handle fsid);
 
     void removeWatch(WatchMapIterator entry);
 

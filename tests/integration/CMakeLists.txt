@@ -19,6 +19,7 @@ target_sources(test_integration
     SdkTestFilter_test.cpp
     SdkTestCreateAccount_test.cpp
     SdkTestTransferStats_test.cpp
+    sdk_test_user_alerts.cpp
     sdk_test_user_attributes.cpp
     SdkTestSyncRootOperations_test.cpp
     SdkTestSyncUploadThrottling_test.cpp
@@ -31,11 +32,16 @@ target_sources(test_integration
     integration_test_utils.cpp
     DisableBackupSync_test.cpp
     SdkTestTransferMaxSpeeds_test.cpp
+    sdk_test_file_path.cpp
     sdk_test_http_server.cpp
     sdk_test_node_tags.cpp
     sdk_test_node_tags.h
     sdk_test_network.cpp
     SdkTestDeviceCenter_test.cpp
+    SdkTestSyncLocalOperations_test.cpp
+    SdkTestSyncNodeAttribute_test.cpp
+    SdkTestCaseInsensitiveCollision_test.cpp
+    backup_sync_operations_test.cpp
 
     passwordManager/SdkTestPasswordManager.cpp
     passwordManager/SdkTestPasswordManager.h
@@ -43,6 +49,7 @@ target_sources(test_integration
     passwordManager/SdkTestPasswordManagerImport_test.cpp
     passwordManager/SdkTestPasswordManagerPassFolderCRUD_test.cpp
     passwordManager/SdkTestPasswordManagerPassNodeCRUD_test.cpp
+    passwordManager/SdkTestPasswordManagerCreditCardNodeCRUD_test.cpp
 )
 
 target_sources_conditional(test_integration

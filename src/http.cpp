@@ -34,10 +34,6 @@
 #include "mega/osx/osxutils.h"
 #endif
 
-#if TARGET_OS_IPHONE
-#include <resolv.h>
-#endif
-
 namespace mega {
 
 // data receive timeout (ds)
@@ -244,10 +240,10 @@ Proxy *HttpIO::getautoproxy()
     {
         GlobalFree(ieProxyConfig.lpszAutoConfigUrl);
     }
-#endif
-
-#if defined(__APPLE__) && !(TARGET_OS_IPHONE)
+#elif defined(__APPLE__) && !(TARGET_OS_IPHONE)
     getOSXproxy(proxy);
+#elif !defined(__APPLE__) && !defined(__ANDROID__)
+    getEnvProxy(proxy);
 #endif
 
     return proxy;
@@ -366,6 +362,7 @@ HttpReq::~HttpReq()
 void HttpReq::init()
 {
     httpstatus = 0;
+    mErrCode = 0;
     inpurge = 0;
     sslcheckfailed = false;
     bufpos = 0;
@@ -514,39 +511,6 @@ void HttpReq::setcontentlength(m_off_t len)
     }
 
     contentlength = len;
-}
-
-// make space for receiving data; adjust len if out of space
-byte* HttpReq::reserveput(unsigned* len)
-{
-    if (buf)
-    {
-        if (bufpos + *len > buflen)
-        {
-            *len = static_cast<unsigned>(buflen - bufpos);
-        }
-
-        return buf + bufpos;
-    }
-    else
-    {
-        if (inpurge)
-        {
-            // FIXME: optimize erase()/resize() -> single copy/resize()
-            in.erase(0, inpurge);
-            bufpos -= inpurge;
-            inpurge = 0;
-        }
-
-        if (bufpos + *len > (int) in.size())
-        {
-            in.resize(static_cast<size_t>(bufpos + *len));
-        }
-
-        *len = static_cast<unsigned>(in.size() - static_cast<unsigned>(bufpos));
-
-        return (byte*)in.data() + bufpos;
-    }
 }
 
 // number of bytes transferred in this request

@@ -298,6 +298,7 @@ struct DemoAppFolder : public DemoApp
 #include <mega/autocomplete.h>
 
 void exec_apiurl(autocomplete::ACState& s);
+void exec_useragent(autocomplete::ACState& s);
 void exec_login(autocomplete::ACState& s);
 void exec_begin(autocomplete::ACState& s);
 void exec_signup(autocomplete::ACState& s);
@@ -452,3 +453,6 @@ void exec_getpricing(autocomplete::ACState&);
 void exec_collectAndPrintTransferStats(autocomplete::ACState&);
 void exec_hashcash(autocomplete::ACState&);
 void exec_getmyip(autocomplete::ACState& s);
+void exec_dnsservers(autocomplete::ACState& s);
+// This functionality remove all nodes from vault except My backups folder and Password Manager node
+void exec_cleanVault(autocomplete::ACState& s);

@@ -22,11 +22,13 @@
 #ifndef MEGA_HTTP_H
 #define MEGA_HTTP_H 1
 
-#include <atomic>
-#include "types.h"
-#include "waiter.h"
 #include "backofftimer.h"
+#include "canceller.h"
+#include "types.h"
 #include "utils.h"
+#include "waiter.h"
+
+#include <atomic>
 
 #ifndef _WIN32
 #include <sys/types.h>
@@ -332,6 +334,7 @@ struct MEGA_API HttpReq
     m_off_t pos;
 
     int httpstatus;
+    unsigned mErrCode{0};
 
     httpmethod_t method;
     contenttype_t type;
@@ -376,6 +379,14 @@ struct MEGA_API HttpReq
     // Hashcash data extracted from X-Hashcash header of cs response, if any
     string mHashcashToken;
     uint8_t mHashcashEasiness{};
+
+    // If the request DNS resolution has failed
+    bool mDnsFailure = false;
+
+    // snapshot of the global cancel_epoch_t when the request is sent
+    // use this to early exit from an ongoing request when cancel_epoch_bump() is called by the
+    // application Note: currently used to early exit from gencash() computation.
+    cancel_epoch_t mCancelSnapshot{};
 
     // HttpIO implementation-specific identifier for this connection
     void* httpiohandle;
@@ -429,9 +440,6 @@ struct MEGA_API HttpReq
 
     // set response content length
     void setcontentlength(m_off_t);
-
-    // reserve space for incoming data
-    byte* reserveput(unsigned* len);
 
     // disconnect open HTTP connection
     void disconnect();

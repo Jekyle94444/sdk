@@ -33,6 +33,7 @@
 #include "mega/user_attribute.h"
 #include "mega/utils_optional.h"
 
+#include <algorithm>
 #include <bitset>
 #include <charconv>
 #include <chrono>
@@ -79,9 +80,9 @@ namespace fs = std::filesystem;
 #include <iomanip>
 
 // FUSE
+#include <mega/common/normalized_path.h>
 #include <mega/fuse/common/mount_info.h>
 #include <mega/fuse/common/mount_result.h>
-#include <mega/fuse/common/normalized_path.h>
 #include <mega/fuse/common/service_flags.h>
 
 using namespace mega;
@@ -97,6 +98,8 @@ using std::dec;
 
 MegaClient* client;
 MegaClient* clientFolder;
+std::string megacliUserAgent{"megacli/" TOSTRING(MEGA_MAJOR_VERSION) "." TOSTRING(
+    MEGA_MINOR_VERSION) "." TOSTRING(MEGA_MICRO_VERSION)};
 
 int gNextClientTag = 1;
 std::map<int, std::function<void(Node*)>> gOnPutNodeTag;
@@ -1507,44 +1510,116 @@ void exec_devcommand(autocomplete::ACState& s)
     const bool isCampaingProvided = s.extractflagparam("-c", campaign);
     std::string groupId;
     const bool isGroupIdProvided = s.extractflagparam("-g", groupId);
+    std::string quotaLengthInMonths;
+    const bool isQuotaLengthInMonths = s.extractflagparam("-q", quotaLengthInMonths);
+    std::string accountLevel;
+    const bool isAccountLevel = s.extractflagparam("-l", accountLevel);
 
     const auto printElement = [](const auto& p){ std::cout << " " << p; };
+
+    struct Param
+    {
+        bool exists;
+        std::string_view name;
+    };
+
+    auto notifyIgnoredParams = [&printElement, &subcommand](std::vector<Param> params)
+    {
+        std::vector<std::string_view> toIgnore;
+        std::for_each(begin(params),
+                      end(params),
+                      [&toIgnore](Param& param)
+                      {
+                          if (param.exists)
+                              toIgnore.emplace_back(param.name);
+                      });
+        if (!toIgnore.empty())
+        {
+            std::cout << "devcommand " << subcommand << " will ignore unrequired";
+            std::for_each(std::begin(toIgnore), std::end(toIgnore), printElement);
+            std::cout << " provided options\n";
+        }
+    };
+
+    auto requiredParamsPresent = [&printElement, &subcommand](std::vector<Param> params) -> bool
+    {
+        std::vector<std::string_view> missing;
+        std::for_each(begin(params),
+                      end(params),
+                      [&missing](Param& param)
+                      {
+                          if (!param.exists)
+                              missing.emplace_back(param.name);
+                      });
+        if (!missing.empty())
+        {
+            std::cout << "devcommand " << subcommand << " missing required ";
+            std::for_each(std::begin(missing), std::end(missing), printElement);
+            std::cout << " options\n";
+            return false;
+        }
+        return true;
+    };
+
+    const auto checkNatural = [&subcommand](const size_t& length,
+                                            const std::string& numberAsString,
+                                            const std::string_view p) -> bool
+    {
+        if (length != numberAsString.size())
+        {
+            std::cout << subcommand << " param " << p
+                      << " must be a natural number: " << numberAsString << " provided\n";
+            return false;
+        }
+        return true;
+    };
+
     if (subcommand == "abs")
     {
-        if (isEmailProvided) std::cout << "devcommand abs will ignore unrequired -e provided\n";
+        notifyIgnoredParams({Param{isEmailProvided, "-e"},
+                             Param{isQuotaLengthInMonths, "-q"},
+                             Param{isAccountLevel, "-l"}});
 
-        std::vector<std::string> req;
-        if (!isCampaingProvided) req.emplace_back("-c");
-        if (!isGroupIdProvided) req.emplace_back("-g");
-        if (!req.empty())
-        {
-            std::cout << "devcommand abs is missing required";
-            std::for_each(std::begin(req), std::end(req), printElement);
-            std::cout << " options\n";
+        if (!requiredParamsPresent(
+                {Param{isCampaingProvided, "-c"}, Param{isGroupIdProvided, "-g"}}))
             return;
-        }
 
         size_t l;
         const int g = std::stoi(groupId, &l); // it's okay throwing in megacli for non-numeric
-        if(l != groupId.size())
-        {
-            std::cout << "abs param -g must be a natural number: " << groupId << " provided\n";
+        if (!checkNatural(l, groupId, "-g"))
             return;
-        }
 
         client->senddevcommand(subcommand.data(), nullptr, 0, 0, g, campaign.c_str());
     }
+    else if (subcommand == "sal")
+    {
+        notifyIgnoredParams({Param{isEmailProvided, "-e"},
+                             Param{isCampaingProvided, "-c"},
+                             Param{isGroupIdProvided, "-g"}});
+
+        if (!requiredParamsPresent(
+                {Param{isQuotaLengthInMonths, "-q"}, Param{isAccountLevel, "-l"}}))
+            return;
+
+        size_t l = 0;
+        const long long q = std::stoll(quotaLengthInMonths, &l);
+        if (!checkNatural(l, quotaLengthInMonths, "-q"))
+            return;
+
+        l = 0;
+        const int al = std::stoi(accountLevel, &l);
+        if (!checkNatural(l, accountLevel, "-a"))
+            return;
+
+        constexpr int businessStatus = 0;
+        client->senddevcommand(subcommand.data(), nullptr, q, businessStatus, al);
+    }
     else
     {
-        std::vector<std::string> param;
-        if (isCampaingProvided) param.emplace_back("-c");
-        if (isGroupIdProvided) param.emplace_back("-g");
-        if (!param.empty())
-        {
-            std::cout << "devcommand " << subcommand << " will ignore unrequired";
-            std::for_each(std::begin(param), std::end(param), printElement);
-            std::cout << " provided options\n";
-        }
+        notifyIgnoredParams({Param{isCampaingProvided, "-c"},
+                             Param{isGroupIdProvided, "-g"},
+                             Param{isQuotaLengthInMonths, "-q"},
+                             Param{isAccountLevel, "-l"}});
 
         client->senddevcommand(subcommand.data(), isEmailProvided ? email.c_str() : nullptr);
     }
@@ -1732,7 +1807,6 @@ static std::shared_ptr<Node> nodebypath(const char* ptr, string* user = NULL, st
                         break;
                     }
 
-                    ptr++;
                     continue;
                 }
 
@@ -2129,9 +2203,23 @@ static void dumptree(Node* n, bool recurse, int depth, const char* title, ofstre
                 break;
             }
             case FOLDERNODE:
-                if (n->isPasswordNode())            stream << "password entry";
-                else if (n->isPasswordNodeFolder()) stream << "password folder";
-                else                                stream << "folder";
+                if (n->isPasswordManagerNode())
+                {
+                    stream << "password manager node entry of type ";
+                    if (n->isPasswordNode())
+                        stream << "password";
+                    else if (n->isCreditCardNode())
+                        stream << "credit card";
+                    else
+                    {
+                        stream << "unknown type";
+                        assert(false);
+                    }
+                }
+                else if (n->isPasswordManagerNodeFolder())
+                    stream << "password folder";
+                else
+                    stream << "folder";
 
                 if (handles_on)
                 {
@@ -2925,6 +3013,43 @@ void exec_findemptysubfoldertrees(autocomplete::ACState& s)
         if (recurse_findemptysubfoldertrees(n.get(), moveToTrash))
         {
             cout << "the search root path only contains empty folders: " << n->displaypath() << endl;
+        }
+    }
+}
+
+void exec_fileversions(autocomplete::ACState& s)
+{
+    if (std::shared_ptr<Node> node = client->nodeByPath(s.words[1].s.c_str()))
+    {
+        std::shared_ptr<Node> current = client->nodebyhandle(node->nodehandle);
+        if (current && current->type == FILENODE)
+        {
+            vector<std::shared_ptr<Node>> versions;
+            versions.push_back(current);
+            bool lookingFor = true;
+            while (lookingFor)
+            {
+                sharedNode_list nodeList =
+                    client->getChildren(current.get(), mega::CancelToken(), true);
+                if (nodeList.empty())
+                {
+                    lookingFor = false;
+                }
+                else
+                {
+                    assert(nodeList.back()->parent == current);
+                    current = nodeList.back();
+                    assert(current->type == FILENODE);
+                    versions.push_back(current);
+                }
+            }
+            cout << "Versions: " << endl;
+            int i = 1;
+            for (auto v: versions)
+            {
+                cout << i << ". " << v->displayname() << " - " << v->nodeHandle() << endl;
+                i++;
+            }
         }
     }
 }
@@ -4269,7 +4394,7 @@ static void exec_fuseflags(autocomplete::ACState& state)
     }; // parseCacheFlags
 
     auto parseExecutorFlags =
-      [&](fuse::TaskExecutorFlags& flags, const std::string& type) {
+      [&](common::TaskExecutorFlags& flags, const std::string& type) {
         std::string idle;
         std::string max;
         std::string min;
@@ -4290,9 +4415,11 @@ static void exec_fuseflags(autocomplete::ACState& state)
 
     std::string flushDelay;
     std::string logLevel;
+    std::string fileExplorerView;
 
     state.extractflagparam("-flush-delay", flushDelay);
     state.extractflagparam("-log-level", logLevel);
+    state.extractflagparam("-file-explorer-view", fileExplorerView);
 
     auto flags = client->mFuseService.serviceFlags();
 
@@ -4300,7 +4427,10 @@ static void exec_fuseflags(autocomplete::ACState& state)
         flags.mFlushDelay = std::chrono::seconds(std::stoul(flushDelay));
 
     if (!logLevel.empty())
-        flags.mLogLevel = fuse::toLogLevel(logLevel);
+        flags.mLogLevel = toLogLevel(logLevel);
+
+    if (!fileExplorerView.empty())
+        flags.mFileExplorerView = fuse::toFileExplorerView(fileExplorerView);
 
     parseCacheFlags(flags.mInodeCacheFlags);
     parseExecutorFlags(flags.mMountExecutorFlags, "mount");
@@ -4308,41 +4438,23 @@ static void exec_fuseflags(autocomplete::ACState& state)
 
     client->mFuseService.serviceFlags(flags);
 
-    std::cout << "Cache Clean Age Threshold: "
-              << flags.mInodeCacheFlags.mCleanAgeThreshold.count()
+    std::cout << "Cache Clean Age Threshold: " << flags.mInodeCacheFlags.mCleanAgeThreshold.count()
               << "\n"
-              << "Cache Clean Interval: "
-              << flags.mInodeCacheFlags.mCleanInterval.count()
+              << "Cache Clean Interval: " << flags.mInodeCacheFlags.mCleanInterval.count() << "\n"
+              << "Cache Clean Size Threshold: " << flags.mInodeCacheFlags.mCleanSizeThreshold
               << "\n"
-              << "Cache Clean Size Threshold: "
-              << flags.mInodeCacheFlags.mCleanSizeThreshold
-              << "\n"
-              << "Cache Max Size: "
-              << flags.mInodeCacheFlags.mMaxSize
-              << "\n"
-              << "Flush Delay: "
-              << flags.mFlushDelay.count()
+              << "Cache Max Size: " << flags.mInodeCacheFlags.mMaxSize << "\n"
+              << "Flush Delay: " << flags.mFlushDelay.count() << "s\n"
+              << "Log Level: " << toString(flags.mLogLevel) << "\n"
+              << "File Explorer View: " << toString(flags.mFileExplorerView) << "\n"
+              << "Mount Max Thread Count: " << flags.mMountExecutorFlags.mMaxWorkers << "\n"
+              << "Mount Max Thread Idle Time: " << flags.mMountExecutorFlags.mIdleTime.count()
               << "s\n"
-              << "Log Level: "
-              << toString(flags.mLogLevel)
-              << "\n"
-              << "Mount Max Thread Count: "
-              << flags.mMountExecutorFlags.mMaxWorkers
-              << "\n"
-              << "Mount Max Thread Idle Time: "
-              << flags.mMountExecutorFlags.mIdleTime.count()
+              << "Mount Min Thread Count: " << flags.mMountExecutorFlags.mMinWorkers << "\n"
+              << "Service Max Thread Count: " << flags.mServiceExecutorFlags.mMaxWorkers << "\n"
+              << "Service Max Thread Idle Time: " << flags.mServiceExecutorFlags.mIdleTime.count()
               << "s\n"
-              << "Mount Min Thread Count: "
-              << flags.mMountExecutorFlags.mMinWorkers
-              << "\n"
-              << "Service Max Thread Count: "
-              << flags.mServiceExecutorFlags.mMaxWorkers
-              << "\n"
-              << "Service Max Thread Idle Time: "
-              << flags.mServiceExecutorFlags.mIdleTime.count()
-              << "s\n"
-              << "Service Min Thread Count: "
-              << flags.mServiceExecutorFlags.mMinWorkers
+              << "Service Min Thread Count: " << flags.mServiceExecutorFlags.mMinWorkers
               << std::endl;
 }
 
@@ -4863,6 +4975,7 @@ autocomplete::ACN autocompleteSyntax()
     std::unique_ptr<Either> p(new Either("      "));
 
     p->Add(exec_apiurl, sequence(text("apiurl"), opt(sequence(param("url"), opt(param("disablepkp"))))));
+    p->Add(exec_useragent, sequence(text("useragent"), opt(param("new_user_agent"))));
     p->Add(exec_login, sequence(text("login"), opt(flag("-fresh")), either(sequence(param("email"), opt(param("password"))),
                                                       sequence(exportedLink(false, true), opt(param("auth_key"))),
                                                       param("session"),
@@ -5041,7 +5154,13 @@ autocomplete::ACN autocompleteSyntax()
     p->Add(exec_encryptLink, sequence(text("encryptlink"), param("link"), param("password")));
     p->Add(exec_decryptLink, sequence(text("decryptlink"), param("link"), param("password")));
     p->Add(exec_share, sequence(text("share"), opt(sequence(remoteFSPath(client, &cwd), opt(sequence(contactEmail(client), opt(either(text("r"), text("rw"), text("full"))), opt(param("origemail"))))))));
-    p->Add(exec_invite, sequence(text("invite"), param("dstemail"), opt(either(param("origemail"), text("del"), text("rmd")))));
+    p->Add(exec_invite,
+           sequence(text("invite"),
+                    param("dstemail"),
+                    opt(either(sequence(text("clink"), param("link")),
+                               text("del"),
+                               text("rmd"),
+                               param("origemail")))));
 
     p->Add(exec_clink, sequence(text("clink"), either(text("renew"), sequence(text("query"), param("handle")), sequence(text("del"), opt(param("handle"))))));
 
@@ -5057,15 +5176,29 @@ autocomplete::ACN autocompleteSyntax()
                                                                           sequence(text("load"), localFSFile())))));
 #ifdef DEBUG
     p->Add(exec_delua, sequence(text("delua"), param("attrname")));
-    p->Add(exec_devcommand, sequence(text("devcommand"), param("subcommand"),
-                                     opt(sequence(flag("-e"), param("email"))),
-                                     opt(sequence(flag("-c"), param("campaign"),
-                                                  flag("-g"), param("group_id")))));
+    p->Add(exec_devcommand,
+           sequence(text("devcommand"),
+                    param("subcommand"),
+                    opt(sequence(flag("-e"), param("email"))),
+                    opt(sequence(flag("-c"), param("campaign"), flag("-g"), param("group_id"))),
+                    opt(sequence(flag("-q"),
+                                 param("quota_in_months"),
+                                 flag("-l"),
+                                 param("account_level")))));
 #endif
 #ifdef MEGASDK_DEBUG_TEST_HOOKS_ENABLED
     p->Add(exec_simulatecondition, sequence(text("simulatecondition"), opt(text("ETOOMANY"))));
 #endif
-    p->Add(exec_alerts, sequence(text("alerts"), opt(either(text("new"), text("old"), wholenumber(10), text("notify"), text("seen")))));
+    p->Add(exec_alerts,
+           sequence(text("alerts"),
+                    opt(either(text("new"),
+                               text("old"),
+                               wholenumber(10),
+                               text("notify"),
+                               text("seen"),
+                               text("test_reminder"),
+                               text("test_payment"),
+                               text("test_payment_v2")))));
     p->Add(exec_recentactions,
            sequence(text("recentactions"),
                     param("hours"),
@@ -5150,6 +5283,7 @@ autocomplete::ACN autocompleteSyntax()
 
     p->Add(exec_find, sequence(text("find"), text("raided")));
     p->Add(exec_findemptysubfoldertrees, sequence(text("findemptysubfoldertrees"), opt(flag("-movetotrash"))));
+    p->Add(exec_fileversions, sequence(text("fversions"), param("path")));
 
 #ifdef MEGA_MEASURE_CODE
     p->Add(exec_deferRequests, sequence(text("deferrequests"), repeat(either(flag("-putnodes")))));
@@ -5244,7 +5378,7 @@ autocomplete::ACN autocompleteSyntax()
                    sequence(text("newfolder"), param("parenthandle"), param("name")),
                    sequence(text("renamefolder"), param("handle"), param("name")),
                    sequence(text("removefolder"), param("handle")),
-                   sequence(text("newentry"),
+                   sequence(text("newpassentry"),
                             param("parenthandle"),
                             param("name"),
                             param("pwd"),
@@ -5256,13 +5390,21 @@ autocomplete::ACN autocompleteSyntax()
                             opt(sequence(flag("-totp-expt"), param("expiration_time"))),
                             opt(sequence(flag("-totp-alg"),
                                          either(text("sha1"), text("sha256"), text("sha512"))))),
-                   sequence(text("newentries"),
+                   sequence(text("newcreditcardentry"),
+                            param("parenthandle"),
+                            param("name"),
+                            param("cardnumber"),
+                            opt(sequence(flag("-n"), param("notes"))),
+                            opt(sequence(flag("-u"), param("card_holder"))),
+                            opt(sequence(flag("-cvv"), param("cvv"))),
+                            opt(sequence(flag("-exp"), param("expirationdate")))),
+                   sequence(text("newpassentries"),
                             param("parenthandle"),
                             repeat(sequence(param("name"), param("uname"), param("pwd")))),
                    sequence(text("getentrydata"), param("nodehandle")),
                    sequence(text("renameentry"), param("nodehandle"), param("name")),
                    sequence(
-                       text("updateentry"),
+                       text("updatepassentry"),
                        param("nodehandle"),
                        opt(sequence(flag("-p"), param("pwd"))),
                        opt(sequence(flag("-url"), param("url"))),
@@ -5276,7 +5418,15 @@ autocomplete::ACN autocompleteSyntax()
                                     opt(sequence(
                                         flag("-totp-alg"),
                                         either(text("sha1"), text("sha256"), text("sha512")))))))),
+                   sequence(text("updatecreditcardentry"),
+                            param("nodehandle"),
+                            opt(sequence(flag("-nu"), param("card_number"))),
+                            opt(sequence(flag("-n"), param("notes"))),
+                            opt(sequence(flag("-u"), param("card_holder"))),
+                            opt(sequence(flag("-cvv"), param("cvv"))),
+                            opt(sequence(flag("-exp"), param("expirationdate")))),
                    sequence(text("removeentry"), param("nodehandle")),
+                   sequence(text("generatetotptoken"), param("nodehandle")),
                    sequence(text("import"),
                             sequence(flag("-source"), either(text("google"))),
                             localFSPath("file"),
@@ -5299,36 +5449,25 @@ autocomplete::ACN autocompleteSyntax()
                     localFSFile("database"),
                     wholenumber(0)));
 
-    p->Add(exec_fuseflags,
-           sequence(text("fuse"),
-                    text("flags"),
-                    repeat(either(sequence(flag("-cache-clean-age-threshold"),
-                                           wholenumber("seconds", 5 * 60)),
-                                  sequence(flag("-cache-clean-interval"),
-                                           wholenumber("seconds", 5 * 60)),
-                                  sequence(flag("-cache-clean-size-threshold"),
-                                           wholenumber("count", 64)),
-                                  sequence(flag("-cache-max-size"),
-                                           wholenumber("count", 256)),
-                                  sequence(flag("-flush-delay"),
-                                           wholenumber("seconds", 4)),
-                                  sequence(flag("-log-level"),
-                                           either(text("DEBUG"),
-                                                  text("ERROR"),
-                                                  text("INFO"),
-                                                  text("WARNING"))),
-                                  sequence(flag("-mount-max-thread-count"),
-                                           wholenumber("count", 16)),
-                                  sequence(flag("-mount-max-thread-idle-time"),
-                                           wholenumber("seconds", 16)),
-                                  sequence(flag("-mount-min-thread-count"),
-                                           wholenumber("count", 0)),
-                                  sequence(flag("-service-max-thread-count"),
-                                           wholenumber("count", 16)),
-                                  sequence(flag("-service-max-thread-idle-time"),
-                                           wholenumber("seconds", 16)),
-                                  sequence(flag("-service-min-thread-count"),
-                                           wholenumber("count", 0))))));
+    p->Add(
+        exec_fuseflags,
+        sequence(text("fuse"),
+                 text("flags"),
+                 repeat(either(
+                     sequence(flag("-cache-clean-age-threshold"), wholenumber("seconds", 5 * 60)),
+                     sequence(flag("-cache-clean-interval"), wholenumber("seconds", 5 * 60)),
+                     sequence(flag("-cache-clean-size-threshold"), wholenumber("count", 64)),
+                     sequence(flag("-cache-max-size"), wholenumber("count", 256)),
+                     sequence(flag("-flush-delay"), wholenumber("seconds", 4)),
+                     sequence(flag("-log-level"),
+                              either(text("DEBUG"), text("ERROR"), text("INFO"), text("WARNING"))),
+                     sequence(flag("-file-explorer-view"), either(text("NONE"), text("LIST"))),
+                     sequence(flag("-mount-max-thread-count"), wholenumber("count", 16)),
+                     sequence(flag("-mount-max-thread-idle-time"), wholenumber("seconds", 16)),
+                     sequence(flag("-mount-min-thread-count"), wholenumber("count", 0)),
+                     sequence(flag("-service-max-thread-count"), wholenumber("count", 16)),
+                     sequence(flag("-service-max-thread-idle-time"), wholenumber("seconds", 16)),
+                     sequence(flag("-service-min-thread-count"), wholenumber("count", 0))))));
 
     p->Add(exec_fusemountadd,
            sequence(text("fuse"),
@@ -5381,7 +5520,8 @@ autocomplete::ACN autocompleteSyntax()
                     text("remove"),
                     param("name")));
 
-    p->Add(exec_getpricing, text("getpricing"));
+    p->Add(exec_getpricing,
+           sequence(text("getpricing"), opt(sequence(flag("-country"), param("countryCode")))));
 
     p->Add(exec_collectAndPrintTransferStats,
            sequence(text("getTransferStats"), opt(either(flag("-uploads"), flag("-downloads")))));
@@ -5431,6 +5571,10 @@ autocomplete::ACN autocompleteSyntax()
                     param("message"),
                     param("recv_timeout_sec"),
                     opt(flag("-IPv4toIPv6"))));
+
+    p->Add(exec_dnsservers, sequence(text("setdns"), either(param("dnslist"), flag("-clear"))));
+
+    p->Add(exec_cleanVault, text("cleanvault"));
 
     return autocompleteTemplate = std::move(p);
 }
@@ -7548,7 +7692,7 @@ void exec_debug(autocomplete::ACState& s)
     }
     if (s.extractflag("-verbose"))
     {
-        SimpleLogger::setLogLevel(logMax);
+        SimpleLogger::setLogLevel(logVerbose);
     }
     if (s.extractflag("-console"))
     {
@@ -7948,6 +8092,25 @@ void exec_apiurl(autocomplete::ACState& s)
     }
 }
 
+void exec_useragent(autocomplete::ACState& s)
+{
+    if (s.words.size() == 1)
+    {
+        cout << "Current UserAgent = " << client->useragent << endl;
+    }
+    else if (client->loggedin() != NOTLOGGEDIN)
+    {
+        cout << "You must not be logged in, to change UserAgent" << endl;
+    }
+    else if (s.words.size() == 2)
+    {
+        auto newUserAgent = s.words[1].s;
+        client->useragent.replace(0, megacliUserAgent.size(), newUserAgent);
+        client->httpio->setuseragent(&newUserAgent);
+        megacliUserAgent = newUserAgent;
+    }
+}
+
 void exec_passwd(autocomplete::ACState&)
 {
     if (client->loggedin() != NOTLOGGEDIN)
@@ -8097,9 +8260,9 @@ void exec_whoami(autocomplete::ACState& s)
         if ((u = client->finduser(client->me)))
         {
             cout << "Account e-mail: " << u->email << " handle: " << Base64Str<MegaClient::USERHANDLE>(client->me) << endl;
-            if (client->signkey)
+            if (client->mEd255Key)
             {
-                string pubKey((const char *)client->signkey->pubKey, EdDSA::PUBLIC_KEY_LENGTH);
+                string pubKey((const char*)client->mEd255Key->pubKey, EdDSA::PUBLIC_KEY_LENGTH);
                 cout << "Credentials: " << AuthRing::fingerprint(pubKey, true) << endl;
             }
         }
@@ -9817,7 +9980,9 @@ void exportnode_result(Error e, handle h, handle ph)
             if (authKey.size())
             {
                 string authToken(publicLink);
-                authToken = authToken.substr(MegaClient::MEGAURL.size()+strlen("/folder/")).append(":").append(authKey);
+                authToken = authToken.substr(MegaClient::getMegaURL().size() + strlen("/folder/"))
+                                .append(":")
+                                .append(authKey);
                 cout << "\n          AuthToken = " << authToken;
             }
         }
@@ -10175,30 +10340,27 @@ void DemoApp::nodes_current()
 
 void DemoApp::account_updated()
 {
+    LOG_debug << "Account has been upgraded/downgraded.";
+}
+
+void DemoApp::notify_confirmation(const char* email)
+{
+    // Upon "uac" action packet. Cryptographic system initialized, ready for login.
     if (client->loggedin() == EPHEMERALACCOUNT || client->loggedin() == EPHEMERALACCOUNTPLUSPLUS)
     {
-        LOG_debug << "Account has been confirmed by another client. Proceed to login with credentials.";
-    }
-    else
-    {
-        LOG_debug << "Account has been upgraded/downgraded.";
+        LOG_debug << "Account setup completed with email " << email << ".";
+        cout << "Account setup completed with email " << email
+             << ". Proceed to login with credentials." << endl;
     }
 }
 
-void DemoApp::notify_confirmation(const char *email)
+void DemoApp::notify_confirm_user_email(handle user, const char* email)
 {
+    // Upon "uec" action packet. Account confirmed with the signup link.
     if (client->loggedin() == EPHEMERALACCOUNT || client->loggedin() == EPHEMERALACCOUNTPLUSPLUS)
     {
-        LOG_debug << "Account has been confirmed with email " << email << ".";
-    }
-}
-
-void DemoApp::notify_confirm_user_email(handle user, const char *email)
-{
-    if (client->loggedin() == EPHEMERALACCOUNT || client->loggedin() == EPHEMERALACCOUNTPLUSPLUS)
-    {
-        LOG_debug << "Account has been confirmed with user " << toHandle(user) << " and email " << email << ". Proceed to login with credentials.";
-        cout << "Account has been confirmed with user " << toHandle(user) << " and email " << email << ". Proceed to login with credentials." << endl;
+        LOG_debug << "Account has been confirmed with user " << toHandle(user) << " and email "
+                  << email;
     }
 }
 
@@ -11082,7 +11244,7 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    SimpleLogger::setLogLevel(logMax);
+    SimpleLogger::setLogLevel(logVerbose);
     auto gLoggerAddr = &gLogger;
     g_externalLogger.addMegaLogger(&gLogger,
 
@@ -11148,9 +11310,7 @@ int main(int argc, char* argv[])
                             dbAccess,
                             gfx,
                             "Gk8DyQBS",
-                            "megacli/" TOSTRING(MEGA_MAJOR_VERSION)
-                            "." TOSTRING(MEGA_MINOR_VERSION)
-                            "." TOSTRING(MEGA_MICRO_VERSION),
+                            megacliUserAgent.c_str(),
                             2,
                             clientType);
 
@@ -12020,27 +12180,27 @@ void exec_syncstatus(autocomplete::ACState& s)
         return std::to_string(value) + *suffix + "B";
     };
 
-    // Display status information to the user.
-    for (auto& info : results)
+    auto getProgress = [](SyncStatusInfo& i) -> double
     {
-        cout << "Sync "
-             << toHandle(info.mBackupID)
-             << ":\n"
-             << "  Name: "
-             << info.mName
-             << "\n"
-             << "  Total number of synced nodes: "
-             << info.mTotalSyncedNodes
-             << "\n"
-             << "  Total size of synced files: "
-             << toSuffixedString(info.mTotalSyncedBytes)
-             << "\n"
-             << "  Transfer progress: "
-             << info.mTransferCounts.progress(0) * 100.0
-             << "%\n"
-             << "  Transfer speed: "
-             << toSuffixedString(speeds[info.mBackupID])
-             << "/s\n";
+        auto p = i.mTransferCounts.progress(0);
+        if (p > 1.0)
+        {
+            const std::string errMsg = "exec_syncstatus: Invalid reportCounts progress value";
+            LOG_err << errMsg;
+            assert(false && errMsg.c_str());
+        }
+        return p * 100.0;
+    };
+
+    // Display status information to the user.
+    for (auto& info: results)
+    {
+        cout << "Sync " << toHandle(info.mBackupID) << ":\n"
+             << "  Name: " << info.mName << "\n"
+             << "  Total number of synced nodes: " << info.mTotalSyncedNodes << "\n"
+             << "  Total size of synced files: " << toSuffixedString(info.mTotalSyncedBytes) << "\n"
+             << "  Transfer progress: " << getProgress(info) << "%\n"
+             << "  Transfer speed: " << toSuffixedString(speeds[info.mBackupID]) << "/s\n";
     }
 }
 
@@ -12154,6 +12314,13 @@ void printSet(const Set* s)
     cout << "Set " << toHandle(s->id()) << endl;
     cout << "\ttype: " << setTypeToString(s->type()) << endl;
     cout << "\tpublic id: " << toHandle(s->publicId()) << endl;
+    if (s->getPublicLink() && s->getPublicLink()->isTakenDown())
+    {
+        cout << "\t\ttake down reason: "
+             << PublicLinkSet::LinkDeletionReasonToString(
+                    s->getPublicLink()->getLinkDeletionReason())
+             << endl;
+    }
     cout << "\tkey: " << Base64::btoa(s->key()) << endl;
     cout << "\tuser: " << toHandle(s->user()) << endl;
     cout << "\tts: " << s->ts() << endl;
@@ -13103,16 +13270,14 @@ void exec_networktest(autocomplete::ACState&)
             if (e == API_OK)
             {
                 cout << "Network connectivity test:\n"
-                     << "\tIPv4 UDP: "
-                     << NetworkConnectivityTestStatusToString(results.ipv4.udpMessages) << '\n'
-                     << "\tIPv4 DNS: "
-                     << NetworkConnectivityTestStatusToString(results.ipv4.dnsLookupMessages)
+                     << "\tIPv4: " << NetworkConnectivityTestStatusToString(results.ipv4.messages)
+                     << '\n'
+                     << "\tIPv4 DNS: " << NetworkConnectivityTestStatusToString(results.ipv4.dns)
                      << '\n'
                      << "\tIPv4 summary: " << results.ipv4.summary << '\n'
-                     << "\tIPv6 UDP: "
-                     << NetworkConnectivityTestStatusToString(results.ipv6.udpMessages) << '\n'
-                     << "\tIPv6 DNS: "
-                     << NetworkConnectivityTestStatusToString(results.ipv6.dnsLookupMessages)
+                     << "\tIPv6: " << NetworkConnectivityTestStatusToString(results.ipv6.messages)
+                     << '\n'
+                     << "\tIPv6 DNS: " << NetworkConnectivityTestStatusToString(results.ipv6.dns)
                      << '\n'
                      << "\tIPv6 summary: " << results.ipv6.summary << endl;
             }
@@ -13232,28 +13397,49 @@ void exec_passwordmanager(autocomplete::ACState& s)
         return pwdData;
     };
     static constexpr std::string_view DELETE_STR{"EMPTY"};
-    const auto createPwdData = [](std::string&& pwd,
-                                  std::string&& url,
-                                  std::string&& userName,
-                                  std::string&& notes,
-                                  std::string&& totpJson)
+    const auto getDataSetter = [](AttrMap& toWriteMap)
     {
-        auto pwdData = std::make_unique<AttrMap>();
-        const auto addData = [&pwdData](std::string&& data, const std::string_view key)
+        return [&toWriteMap](std::string&& data, const std::string_view key)
         {
             if (data.empty())
                 return;
             // patch to allow setting to null taking into account that extractflag doesn't accept ""
             if (data == DELETE_STR)
                 data.clear();
-            pwdData->map[AttrMap::string2nameid(key)] = std::move(data);
+            toWriteMap.map[AttrMap::string2nameid(key)] = std::move(data);
         };
+    };
+    const auto createPwdData = [&getDataSetter](std::string&& pwd,
+                                                std::string&& url,
+                                                std::string&& userName,
+                                                std::string&& notes,
+                                                std::string&& totpJson)
+    {
+        auto pwdData = std::make_unique<AttrMap>();
+        const auto addData = getDataSetter(*pwdData);
         addData(std::move(pwd), MegaClient::PWM_ATTR_PASSWORD_PWD);
         addData(std::move(url), MegaClient::PWM_ATTR_PASSWORD_URL);
         addData(std::move(userName), MegaClient::PWM_ATTR_PASSWORD_USERNAME);
         addData(std::move(notes), MegaClient::PWM_ATTR_PASSWORD_NOTES);
         addData(std::move(totpJson), MegaClient::PWM_ATTR_PASSWORD_TOTP);
         return pwdData;
+    };
+    const auto createCcData = [&getDataSetter](std::string&& number,
+                                               std::string&& notes,
+                                               std::string&& holder,
+                                               std::string&& cvv,
+                                               std::string&& expirationDate)
+    {
+        auto ccData = std::make_unique<AttrMap>();
+        const auto addData = getDataSetter(*ccData);
+        addData(std::string{MegaClient::PWM_ATTR_NODE_TYPE_CREDIT_CARD},
+                MegaClient::PWM_ATTR_NODE_TYPE);
+        addData(std::move(number), MegaClient::PWM_ATTR_CREDIT_CARD_NUMBER);
+        addData(std::move(notes), MegaClient::PWM_ATTR_CREDIT_NOTES);
+        addData(std::move(holder), MegaClient::PWM_ATTR_CREDIT_CARD_HOLDER);
+        addData(std::move(cvv), MegaClient::PWM_ATTR_CREDIT_CVV);
+        addData(std::move(expirationDate), MegaClient::PWM_ATTR_CREDIT_EXP_DATE);
+        return ccData;
     };
     const auto doesNodeHaveTotpData = [](const Node& n) -> bool
     {
@@ -13263,38 +13449,79 @@ void exec_passwordmanager(autocomplete::ACState& s)
         assert(pwdData.has_value());
         return pwdData->getStringView(MegaClient::PWM_ATTR_PASSWORD_TOTP).has_value();
     };
-    const auto printEntryDetails = [](NodeHandle nh)
+
+    const auto printAttr =
+        [](const std::string_view attr, const AttrMap& data, const unsigned nest = 1) -> void
+    {
+        for (unsigned i = 0; i < nest; ++i)
+            std::cout << "\t";
+        std::cout << attr << ": " << data.getStringView(attr).value_or("") << "\n";
+    };
+
+    const auto printEntryDetails = [&printAttr](NodeHandle nh)
     {
         auto pwdNode = client->nodeByHandle(nh);
         assert(pwdNode);
-        assert(pwdNode->isPasswordNode());
+        assert(pwdNode->isPasswordManagerNode());
 
-        const auto pwdData =
-            pwdNode->attrs.getNestedJsonObject(MegaClient::NODE_ATTR_PASSWORD_MANAGER);
-        assert(pwdData.has_value());
-        cout << "Password data for entry " << pwdNode->attrs.map['n'] << " (" << toNodeHandle(nh) << "):\n";
-        const auto printAttr =
-            [](const std::string_view attr, const AttrMap& data, const unsigned nest = 1) -> void
-        {
-            for (unsigned i = 0; i < nest; ++i)
-                std::cout << "\t";
-            std::cout << attr << ": " << data.getStringView(attr).value_or("") << "\n";
-        };
-        printAttr(MegaClient::PWM_ATTR_PASSWORD_PWD, *pwdData);
-        printAttr(MegaClient::PWM_ATTR_PASSWORD_USERNAME, *pwdData);
-        printAttr(MegaClient::PWM_ATTR_PASSWORD_URL, *pwdData);
-        printAttr(MegaClient::PWM_ATTR_PASSWORD_NOTES, *pwdData);
+        auto entryData = pwdNode->attrs.getNestedJsonObject(MegaClient::NODE_ATTR_PASSWORD_MANAGER);
+        assert(entryData.has_value());
 
-        const auto totpData = pwdData->getNestedJsonObject(MegaClient::PWM_ATTR_PASSWORD_TOTP);
-        std::cout << "\t" << MegaClient::PWM_ATTR_PASSWORD_TOTP << ": " << (totpData ? "" : "null")
-                  << "\n";
-        if (totpData)
+        if (pwdNode->isPasswordNode())
         {
-            printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_SHSE, *totpData, 2);
-            printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_NDIGITS, *totpData, 2);
-            printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_EXPT, *totpData, 2);
-            printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_HASH_ALG, *totpData, 2);
+            const auto nRemoved =
+                entryData->map.erase(AttrMap::string2nameid(MegaClient::PWM_ATTR_PASSWORD_TOTP));
+            assert(nRemoved <= 1);
         }
+
+        cout << "PWM data for entry " << pwdNode->displayname() << " (" << toNodeHandle(nh) << ")";
+        if (pwdNode->isPasswordNode())
+        {
+            cout << " of type password node:\n";
+            printAttr(MegaClient::PWM_ATTR_PASSWORD_PWD, *entryData);
+            printAttr(MegaClient::PWM_ATTR_PASSWORD_USERNAME, *entryData);
+            printAttr(MegaClient::PWM_ATTR_PASSWORD_URL, *entryData);
+            printAttr(MegaClient::PWM_ATTR_PASSWORD_NOTES, *entryData);
+
+            const auto totpData =
+                pwdNode->attrs.getComplexNestedJsonObject(MegaClient::NODE_ATTR_PASSWORD_MANAGER,
+                                                          MegaClient::PWM_ATTR_PASSWORD_TOTP);
+
+            std::cout << "\t" << MegaClient::PWM_ATTR_PASSWORD_TOTP << ": "
+                      << (totpData ? "" : "null") << "\n";
+            if (totpData)
+            {
+                AttrMap totpMap;
+                totpMap.fromjsonObject(
+                    totpData->map.at(AttrMap::string2nameid(MegaClient::PWM_ATTR_PASSWORD_TOTP))
+                        .c_str());
+                printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_SHSE, totpMap, 2);
+                printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_NDIGITS, totpMap, 2);
+                printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_EXPT, totpMap, 2);
+                printAttr(MegaClient::PWM_ATTR_PASSWORD_TOTP_HASH_ALG, totpMap, 2);
+            }
+        }
+        else if (pwdNode->isCreditCardNode())
+        {
+            cout << " of type credit card node:\n";
+            printAttr(MegaClient::PWM_ATTR_CREDIT_CARD_NUMBER, *entryData);
+            printAttr(MegaClient::PWM_ATTR_CREDIT_NOTES, *entryData);
+            printAttr(MegaClient::PWM_ATTR_CREDIT_CARD_HOLDER, *entryData);
+            printAttr(MegaClient::PWM_ATTR_CREDIT_CVV, *entryData);
+            printAttr(MegaClient::PWM_ATTR_CREDIT_EXP_DATE, *entryData);
+        }
+        else
+        {
+            assert(false);
+            std::cout << "Error in printEntryDetails: Unknown node sub-type";
+        }
+    };
+    auto updateEntryCallback = [printEntryDetails](NodeHandle nh, Error e)
+    {
+        if (e == API_OK)
+            printEntryDetails(nh);
+        else
+            std::cout << "Error: " << errorstring(e) << "\n";
     };
 
     const auto validateAndSetDefaultsForTotpInit = [](const std::optional<std::string>& shse,
@@ -13439,7 +13666,7 @@ void exec_passwordmanager(autocomplete::ACState& s)
         auto nh = getNodeHandleFromParam(2);
         client->removeNode(nh, false, 0);
     }
-    else if (command == "newentry")
+    else if (command == "newpassentry")
     {
         if (!moreParamsThan(4)) return;
 
@@ -13474,7 +13701,7 @@ void exec_passwordmanager(autocomplete::ACState& s)
                                              std::move(alg),
                                              std::move(ndig));
                 }) |
-            transform((static_cast<std::string (AttrMap::*)() const>(&AttrMap::getjson)));
+            transform((static_cast<std::string (AttrMap::*)() const>(&AttrMap::getJsonObject)));
 
         auto pwdData = createPwdData(std::string{pwd},
                                      s.extractflagparam("-url").value_or(""),
@@ -13482,12 +13709,49 @@ void exec_passwordmanager(autocomplete::ACState& s)
                                      s.extractflagparam("-n").value_or(""),
                                      totpDataJson.value_or(""));
 
-        if (const auto errCode = client->createPasswordNode(name, std::move(pwdData), nParent, 0);
+        if (const auto errCode =
+                client->createPasswordEntry(name,
+                                            std::move(pwdData),
+                                            MegaClient::validateNewPasswordNodeData,
+                                            nParent,
+                                            0);
             errCode != API_OK)
             std::cout << "Error before sending the putnodes. Code: " << errorstring(errCode)
                       << "\n";
     }
-    else if (command == "newentries")
+    else if (command == "newcreditcardentry")
+    {
+        if (!moreParamsThan(4))
+            return;
+
+        auto ph = getNodeHandleFromParam(2);
+        auto nParent = client->nodeByHandle(ph);
+        if (!nParent)
+        {
+            cout << "Wrong parent handle provided " << toNodeHandle(ph) << "\n";
+            return;
+        }
+
+        auto name = s.words[3].s.c_str();
+        auto cardnumber = s.words[4].s.c_str();
+        assert(*name && *cardnumber);
+        auto ccData = createCcData(std::string{cardnumber},
+                                   s.extractflagparam("-n").value_or(""),
+                                   s.extractflagparam("-u").value_or(""),
+                                   s.extractflagparam("-cvv").value_or(""),
+                                   s.extractflagparam("-exp").value_or(""));
+
+        if (const auto errCode =
+                client->createPasswordEntry(name,
+                                            std::move(ccData),
+                                            MegaClient::validateNewCreditCardNodeData,
+                                            nParent,
+                                            0);
+            errCode != API_OK)
+            std::cout << "Error before sending the putnodes. Code: " << errorstring(errCode)
+                      << "\n";
+    }
+    else if (command == "newpassentries")
     {
         if (s.words.size() <= 3)
         {
@@ -13513,7 +13777,11 @@ void exec_passwordmanager(autocomplete::ACState& s)
             auto pwdData = createPwdData(std::string{pwd}, "", std::string{userName}, "", "");
             info[std::move(name)] = std::move(pwdData);
         }
-        if (const auto errCode = client->createPasswordNodes(std::move(info), nParent, 0);
+        if (const auto errCode =
+                client->createPasswordEntries(std::move(info),
+                                              MegaClient::validateNewPasswordNodeData,
+                                              nParent,
+                                              0);
             errCode != API_OK)
             std::cout << "Error before sending the putnodes. Code: " << errorstring(errCode)
                       << "\n";
@@ -13529,15 +13797,16 @@ void exec_passwordmanager(autocomplete::ACState& s)
             cout << "No node found with provided handle " << toNodeHandle(nh) << "\n";
             return;
         }
-        if (!pwdNode->isPasswordNode())
+        if (!pwdNode->isPasswordManagerNode())
         {
-            cout << "Node handle provided " << toNodeHandle(nh) << " isn't a Password Node's\n";
+            cout << "Node handle provided " << toNodeHandle(nh)
+                 << " isn't a Password Manager Node's\n";
             return;
         }
 
         printEntryDetails(nh);
     }
-    else if (command == "updateentry")
+    else if (command == "updatepassentry")
     {
         if (!moreParamsThan(3)) return;
 
@@ -13562,20 +13831,39 @@ void exec_passwordmanager(autocomplete::ACState& s)
                               std::move(totpExpt),
                               std::move(totpAlg),
                               std::move(totpNdig)) |
-            transform((static_cast<std::string (AttrMap::*)() const>(&AttrMap::getjson)));
+            transform((static_cast<std::string (AttrMap::*)() const>(&AttrMap::getJsonObject)));
         auto pwdData = createPwdData(s.extractflagparam("-p").value_or(""),
                                      s.extractflagparam("-url").value_or(""),
                                      s.extractflagparam("-u").value_or(""),
                                      s.extractflagparam("-n").value_or(""),
                                      totpData.value_or(removeTotp ? std::string{DELETE_STR} : ""));
 
-        auto cb = [printEntryDetails](NodeHandle nh, Error e)
-        {
-            if (e == API_OK) printEntryDetails(nh);
-            else std::cout << "Error: " << errorstring(e) << "\n";
-        };
+        if (const auto errCode =
+                client->updatePasswordNode(nh, std::move(pwdData), std::move(updateEntryCallback));
+            errCode != API_OK)
+            std::cout << "Error before sending the setattr command. Code: " << errorstring(errCode)
+                      << "\n";
+    }
+    else if (command == "updatecreditcardentry")
+    {
+        if (!moreParamsThan(3))
+            return;
 
-        if (const auto errCode = client->updatePasswordNode(nh, std::move(pwdData), std::move(cb));
+        auto nh = getNodeHandleFromParam(2);
+        auto n = client->nodeByHandle(nh);
+        if (!(n && n->isPasswordNode()))
+        {
+            cout << "Wrong Password node handle provided " << toNodeHandle(nh) << "\n";
+        }
+
+        auto ccData = createCcData(s.extractflagparam("-nu").value_or(""),
+                                   s.extractflagparam("-n").value_or(""),
+                                   s.extractflagparam("-u").value_or(""),
+                                   s.extractflagparam("-cvv").value_or(""),
+                                   s.extractflagparam("-exp").value_or(""));
+
+        if (const auto errCode =
+                client->updateCreditCardNode(nh, std::move(ccData), std::move(updateEntryCallback));
             errCode != API_OK)
             std::cout << "Error before sending the setattr command. Code: " << errorstring(errCode)
                       << "\n";
@@ -13599,6 +13887,21 @@ void exec_passwordmanager(autocomplete::ACState& s)
         const auto sourceFile = localPathArg(s.words[2].s);
         const auto parentHandle = getNodeHandleFromParam(3);
         importpasswordsfromgooglefile(sourceFile, parentHandle, sourceOrigin);
+    }
+    else if (command == "generatetotptoken")
+    {
+        if (!moreParamsThan(2))
+            return;
+
+        const auto nh = getNodeHandleFromParam(2);
+        const auto [err, tokenResult] = client->generateTotpTokenFromNode(nh.as8byte());
+        if (err == API_OK)
+        {
+            conlock(cout) << "Totp token generated.\n\t* Token: " << tokenResult.first
+                          << "\n\t* Lifetime: " << tokenResult.second << "(secs)\n";
+            return;
+        }
+        cout << command << ". Error generating Totp token: Error(" << err << ")\n";
     }
     else
     {
@@ -13825,10 +14128,18 @@ void exec_nodeTag(autocomplete::ACState& s)
     }
 }
 
-void exec_getpricing(autocomplete::ACState&)
+void exec_getpricing(autocomplete::ACState& s)
 {
-    cout << "Getting pricing plans... " << endl;
-    client->purchase_enumeratequotaitems();
+    cout << "Getting pricing plans";
+
+    std::optional<std::string> countryCode{s.extractflagparam("-country")};
+    if (countryCode)
+    {
+        cout << " localized for " << *countryCode;
+    }
+    cout << "..." << endl;
+
+    client->purchase_enumeratequotaitems(countryCode);
 }
 
 void exec_collectAndPrintTransferStats(autocomplete::ACState& state)
@@ -13911,4 +14222,102 @@ void exec_getmyip(autocomplete::ACState&)
             cout << "Country Code: " << countryCode << endl;
             cout << "IP address: " << ipAddress << endl;
         });
+}
+
+void exec_dnsservers(autocomplete::ACState& s)
+{
+    CurlHttpIO* curlIO = dynamic_cast<CurlHttpIO*>(client->httpio);
+
+    if (!curlIO)
+    {
+        cout << "Functionality only available for CurlHttpIO." << endl;
+        return;
+    }
+
+    string serverList;
+
+    if (!s.extractflag("-clear"))
+    {
+        serverList = s.words[1].s;
+    }
+
+    if (curlIO->setdnsservers(serverList.c_str()))
+    {
+        cout << "DNS list ";
+        if (!serverList.empty())
+        {
+            cout << "set: " << serverList << endl;
+        }
+        else
+        {
+            cout << "cleared. Using the system DNS." << endl;
+        }
+    }
+    else
+    {
+        cout << "libcurl does not have support for a DNS resolver backend. Build libcurl with "
+                "c-ares support to use this functionality."
+             << endl;
+    }
+}
+
+void exec_cleanVault(autocomplete::ACState&)
+{
+    std::map<attr_t, NodeHandle> nodeHandles;
+    auto cleanVault = [&nodeHandles]()
+    {
+        // If this method is called and both attributes aren't set, we return without doing nothing
+        // In standard situation both vaules are received at ug response
+        // If one of attributes needs to be requested to server we have to wait until is received to
+        // proceed with clean vault
+        auto itBackup = nodeHandles.find(ATTR_MY_BACKUPS_FOLDER);
+        auto itPwmBase = nodeHandles.find(ATTR_PWM_BASE);
+        if (itBackup == nodeHandles.end() || itPwmBase == nodeHandles.end())
+        {
+            return;
+        }
+
+        auto vault = client->nodeByHandle(client->mNodeManager.getRootNodeVault());
+        if (!vault.get())
+        {
+            return;
+        }
+        auto vaultChildren = client->getChildren(vault.get());
+        for (auto const& child: vaultChildren)
+        {
+            if (child->nodeHandle() != itBackup->second && child->nodeHandle() != itPwmBase->second)
+            {
+                client->unlink(child.get(), false, 0, true);
+            }
+        }
+    };
+
+    // Vault is only clean if both attributes are set
+    auto getUserAttributeAndCleanVault = [&nodeHandles, cleanVault](attr_t attribute)
+    {
+        client->getua(
+            client->ownuser(),
+            attribute,
+            0,
+            [&nodeHandles, attribute, cleanVault](error e)
+            {
+                if (e == API_ENOENT)
+                {
+                    nodeHandles[attribute] = NodeHandle();
+                }
+
+                cleanVault();
+            },
+            [&nodeHandles, cleanVault](byte* buffer, unsigned, attr_t attr)
+            {
+                handle h;
+                memcpy(&h, buffer, MegaClient::NODEHANDLE);
+                nodeHandles[attr].set6byte(h);
+                cleanVault();
+            },
+            nullptr);
+    };
+
+    getUserAttributeAndCleanVault(ATTR_PWM_BASE);
+    getUserAttributeAndCleanVault(ATTR_MY_BACKUPS_FOLDER);
 }

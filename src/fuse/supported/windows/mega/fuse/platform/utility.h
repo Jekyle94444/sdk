@@ -2,8 +2,8 @@
 
 #include <string>
 
+#include <mega/common/utility.h>
 #include <mega/fuse/common/inode_info_forward.h>
-#include <mega/fuse/common/utility.h>
 #include <mega/fuse/platform/library.h>
 #include <mega/fuse/platform/mount_forward.h>
 
@@ -39,6 +39,25 @@ void translate(FSP_FSCTL_FILE_INFO& destination,
                const InodeInfo& source);
 
 NTSTATUS translate(Error result);
+
+// Open the path and keep opening exclusively during the lifetime of the object
+// Note: If the folder has been opened by others, the exclusive opening fails.
+class FolderLocker
+{
+    HANDLE mHandle{INVALID_HANDLE_VALUE};
+
+public:
+    FolderLocker() = default;
+
+    // path is a folder
+    FolderLocker(const std::wstring& path);
+
+    FolderLocker& operator=(FolderLocker&& other);
+
+    ~FolderLocker();
+
+    void release();
+};
 
 } // platform
 } // fuse

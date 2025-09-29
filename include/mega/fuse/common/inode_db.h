@@ -6,13 +6,21 @@
 #include <string>
 #include <utility>
 
+#include <mega/common/client_forward.h>
+#include <mega/common/database_forward.h>
+#include <mega/common/error_or_forward.h>
+#include <mega/common/lockable.h>
+#include <mega/common/node_event_forward.h>
+#include <mega/common/node_event_observer.h>
+#include <mega/common/node_event_queue_forward.h>
+#include <mega/common/node_info_forward.h>
+#include <mega/common/query.h>
+#include <mega/common/query_forward.h>
+#include <mega/common/scoped_query_forward.h>
+#include <mega/common/transaction_forward.h>
 #include <mega/fuse/common/any_lock_set_forward.h>
-#include <mega/fuse/common/bind_handle_forward.h>
-#include <mega/fuse/common/client_forward.h>
-#include <mega/fuse/common/database_forward.h>
 #include <mega/fuse/common/directory_inode_forward.h>
 #include <mega/fuse/common/directory_inode_results.h>
-#include <mega/fuse/common/error_or_forward.h>
 #include <mega/fuse/common/file_cache_forward.h>
 #include <mega/fuse/common/file_extension_db_forward.h>
 #include <mega/fuse/common/file_inode_forward.h>
@@ -20,16 +28,7 @@
 #include <mega/fuse/common/inode_db_forward.h>
 #include <mega/fuse/common/inode_forward.h>
 #include <mega/fuse/common/inode_id_forward.h>
-#include <mega/fuse/common/lockable.h>
-#include <mega/fuse/common/node_event_forward.h>
-#include <mega/fuse/common/node_event_observer.h>
-#include <mega/fuse/common/node_event_queue_forward.h>
-#include <mega/fuse/common/node_info_forward.h>
-#include <mega/fuse/common/query.h>
-#include <mega/fuse/common/query_forward.h>
-#include <mega/fuse/common/scoped_query_forward.h>
 #include <mega/fuse/common/tags.h>
-#include <mega/fuse/common/transaction_forward.h>
 #include <mega/fuse/platform/mount_forward.h>
 #include <mega/fuse/platform/service_context_forward.h>
 
@@ -37,14 +36,19 @@
 
 namespace mega
 {
-namespace fuse
+namespace common
 {
 
 template<>
-struct LockableTraits<InodeDB>
-  : public LockableTraitsCommon<InodeDB, std::recursive_mutex>
+struct LockableTraits<fuse::InodeDB>
+  : public LockableTraitsCommon<fuse::InodeDB, std::recursive_mutex>
 {
-}; // LockableTraits<InodeDB>
+}; // LockableTraits<fuse::InodeDB>
+
+} // common
+
+namespace fuse
+{
 
 // Manages all inodes that are exposed to userspace.
 //
@@ -81,8 +85,8 @@ struct LockableTraits<InodeDB>
 // Once a file has been exposed to userspace under some ID, that file
 // can continue be accessed via that ID until it has been removed.
 class InodeDB final
-  : public Lockable<InodeDB>
-  , public NodeEventObserver
+  : public common::Lockable<InodeDB>
+  , public common::NodeEventObserver
 {
     // So they can remove themselves from the database.
     friend class DirectoryInode;
@@ -124,84 +128,78 @@ class InodeDB final
     // What queries does the InodeDB perform?
     struct Queries
     {
-        Queries(Database& database);
+        Queries(common::Database& database);
 
         // Add an inode to the database.
-        Query mAddInode;
-
-        // Clear every inode's bind handle.
-        Query mClearBindHandles;
+        common::Query mAddInode;
 
         // What inodes are present under the specified node handle?
-        Query mGetChildrenByParentHandle;
+        common::Query mGetChildrenByParentHandle;
         
         // What extension and ID is associated with the given node handle?
-        Query mGetExtensionAndInodeIDByHandle;
+        common::Query mGetExtensionAndInodeIDByHandle;
 
         // Get an inode's extension and ID based on a name and parent handle.
-        Query mGetExtensionAndInodeIDByNameAndParentHandle;
+        common::Query mGetExtensionAndInodeIDByNameAndParentHandle;
 
         // What inode is associated with the specified inode?
-        Query mGetHandleByID;
+        common::Query mGetHandleByID;
 
         // What inode is associated with a given node handle?
-        Query mGetInodeByHandle;
+        common::Query mGetInodeByHandle;
 
         // What inode is associated with a given ID?
-        Query mGetInodeByID;
+        common::Query mGetInodeByID;
 
-        // What ID is associated with the given bind handle or node handle?
-        Query mGetInodeIDByBindHandleOrHandle;
+        // What ID is associated with the given node handle?
+        common::Query mGetInodeIDByHandle;
 
         // Get an inode's ID based on name and parent handle.
-        Query mGetInodeIDByNameAndParentHandle;
+        common::Query mGetInodeIDByNameAndParentHandle;
 
         // What inode are present under the specified node handle?
-        Query mGetInodeIDByParentHandle;
+        common::Query mGetInodeIDByParentHandle;
 
         // Has a specific inode been modified?
-        Query mGetModifiedByID;
+        common::Query mGetModifiedByID;
 
         // What inodes have been modified?
-        Query mGetModifiedInodes;
+        common::Query mGetModifiedInodes;
 
         // What is the next free inode ID?
-        Query mGetNextInodeID;
+        common::Query mGetNextInodeID;
 
         // Increment the next free inode ID.
-        Query mIncrementNextInodeID;
+        common::Query mIncrementNextInodeID;
 
         // Remove an inode specified by ID.
-        Query mRemoveInodeByID;
+        common::Query mRemoveInodeByID;
 
-        // Set an inode's bind handle.
-        Query mSetBindHandleByID;
-
-        // Set an inode's bind handle, handle, name and parent handle.
-        Query mSetBindHandleHandleNameParentHandleByID;
+        // Set an inode's handle, name and parent handle.
+        common::Query mSetHandleNameParentHandleByID;
 
         // Specify whether an inode has been modified.
-        Query mSetModifiedByID;
+        common::Query mSetModifiedByID;
 
         // Set an inode's name and parent handle.
-        Query mSetNameParentHandleByID;
+        common::Query mSetNameParentHandleByID;
     }; // Queries
 
     // Add a new inode to the index.
-    InodeRef add(InodePtr (InodeDB::*build)(const NodeInfo&),
-                 const NodeInfo& info);
+    InodeRef add(InodePtr (InodeDB::*build)(const common::NodeInfo&),
+                 const common::NodeInfo& info);
 
     // Add a new file to the database.
     InodeID addFile(const FileExtension& extension,
                     const std::string& name,
                     NodeHandle parentHandle,
-                    Transaction& transaction);
+                    common::Transaction& transaction);
 
     // Instantiate a new directory inode.
-    InodePtr buildDirectory(const NodeInfo& info);
+    InodePtr buildDirectory(const common::NodeInfo& info);
 
     // Instantiate a new file inode.
-    InodePtr buildFile(const NodeInfo& info);
+    InodePtr buildFile(const common::NodeInfo& info);
 
     // Try and retrieve a reference to a parent's child.
     InodeRef child(const DirectoryInode& parent,
@@ -229,7 +227,7 @@ class InodeDB final
     bool discard() const;
 
     // Load an inode from the client.
-    InodeRef get(Client& client, NodeHandle handle) const;
+    InodeRef get(common::Client& client, NodeHandle handle) const;
 
     // Load an inode from the file cache by handle.
     InodeRef get(FileCache& fileCache,
@@ -244,8 +242,8 @@ class InodeDB final
     // Load an inode from the file cache.
     InodeRef get(FileCache& fileCache,
                  AnyLockSet locks,
-                 ScopedQuery query,
-                 Transaction transaction) const;
+                 common::ScopedQuery query,
+                 common::Transaction transaction) const;
 
     // Specify what cloud node is associated with the specified file.
     void handle(FileInode& file,
@@ -257,17 +255,17 @@ class InodeDB final
                      const std::string& name) const;
 
     // Check if a directory contains any children.
-    ErrorOr<bool> hasChildren(const DirectoryInode& directory) const;
+    common::ErrorOr<bool> hasChildren(const DirectoryInode& directory) const;
 
     // Make a new directory below parent.
-    ErrorOr<MakeInodeResult> makeDirectory(const platform::Mount& mount,
-                                           const std::string& name,
-                                           DirectoryInodeRef parent);
+    common::ErrorOr<MakeInodeResult> makeDirectory(const platform::Mount& mount,
+                                                   const std::string& name,
+                                                   DirectoryInodeRef parent);
 
     // Make a new file below parent.
-    ErrorOr<MakeInodeResult> makeFile(const platform::Mount& mount,
-                                      const std::string& name,
-                                      DirectoryInodeRef parent);
+    common::ErrorOr<MakeInodeResult> makeFile(const platform::Mount& mount,
+                                              const std::string& name,
+                                              DirectoryInodeRef parent);
 
     // Retrieve a list of all the modified inodes.
     using NodeHandleInodeIDPair       = std::pair<NodeHandle, InodeID>;
@@ -310,9 +308,6 @@ class InodeDB final
     // Unlink a file.
     Error unlink(FileInodeRef file);
 
-    // Tracks which inode is associated with what bind handle.
-    mutable ToInodeRawPtrMap<BindHandle> mByBindHandle;
-
     // Tracks which inode is associated with what node handle.
     mutable ToInodeRawPtrMap<NodeHandle> mByHandle;
 
@@ -342,17 +337,6 @@ public:
     // Add a memory-only inode to the database.
     void add(const FileInode& inode);
 
-    // Signal that file's content is being bound to a name in the cloud.
-    auto binding(const FileInode& file, const BindHandle& handle)
-      -> ToInodeRawPtrMap<BindHandle>::iterator;
-
-    // Retrieve the inode that is being bound using the specified handle.
-    FileInodeRef binding(const BindHandle& handle) const;
-
-    // Signal that file's content has been bound to a name in the cloud.
-    void bound(const FileInode& file,
-               ToInodeRawPtrMap<BindHandle>::iterator iterator);
-
     // Retrieve the cache associated with this database.
     InodeCache& cache() const;
 
@@ -360,7 +344,7 @@ public:
     void clear();
 
     // Retrieve the client associated with this database.
-    Client& client() const;
+    common::Client& client() const;
 
     // Called by the client when its view of the cloud is current.
     void current();
@@ -402,7 +386,7 @@ public:
     FileInodeRefVector modified(NodeHandle parent) const;
 
     // Called when nodes have been updated in the cloud.
-    void updated(NodeEventQueue& events) override;
+    void updated(common::NodeEventQueue& events) override;
 }; // InodeDB
 
 } // fuse

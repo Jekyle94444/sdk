@@ -62,7 +62,7 @@ double stats::TransferSlotStats::failedRequestRatio() const
     return static_cast<double>(mNumFailedRequests) / static_cast<double>(mNumTotalRequests);
 }
 
-double stats::TransferSlotStats::averageLatency() const
+double stats::TransferSlotStats::averageConnectTime() const
 {
     assert(mTotalConnectTime != -1 || !mNumRequestsWithCalculatedLatency);
     if (mTotalConnectTime <= 0 || !mNumRequestsWithCalculatedLatency)
@@ -72,15 +72,15 @@ double stats::TransferSlotStats::averageLatency() const
     return std::round(mTotalConnectTime / static_cast<double>(mNumRequestsWithCalculatedLatency));
 }
 
-m_off_t stats::TransferSlotStats::averageStartTransferTime() const
+double stats::TransferSlotStats::averageStartTransferTime() const
 {
     assert(mTotalStartTransferTime != -1 || !mNumRequestsWithCalculatedLatency);
     if (mTotalStartTransferTime <= 0 || !mNumRequestsWithCalculatedLatency)
     {
         return 0;
     }
-    return static_cast<m_off_t>(std::round(mTotalStartTransferTime /
-                                           static_cast<double>(mNumRequestsWithCalculatedLatency)));
+    return std::round(mTotalStartTransferTime /
+                      static_cast<double>(mNumRequestsWithCalculatedLatency));
 }
 
 // transfer attempts are considered failed after XFERTIMEOUT deciseconds
@@ -319,25 +319,7 @@ TransferSlot::~TransferSlot()
         }
     }
 
-    // Manage transfer stats before setting the slot to NULL
-    LOG_verbose << "[TransferSlot::~TransferSlot] Stats: FailedRequestRatio = "
-                << tsStats.failedRequestRatio()
-                << " ms. Average latency: " << tsStats.averageLatency()
-                << " ms. Average start transfer time: " << tsStats.averageStartTransferTime()
-                << " [totalRequests = " << tsStats.mNumTotalRequests
-                << ", failedRequests = " << tsStats.mNumFailedRequests
-                << ", totalRequestsWithLatency = " << tsStats.mNumRequestsWithCalculatedLatency
-                << "] [cloudRaid = " << (void*)(cloudRaid.get()) << "]";
-    if (transfer->addTransferStats())
-    {
-        LOG_verbose << "[TransferSlot::~TransferSlot] Stats for this transfer have been added to "
-                       "the global transfer stats";
-    }
-    else
-    {
-        LOG_debug << "[TransferSlot::~TransferSlot] Stats for this transfer have NOT been added to "
-                     "the global transfer stats";
-    }
+    processTransferStats();
 
     transfer->slot = NULL;
 
@@ -374,9 +356,55 @@ TransferSlot::~TransferSlot()
     LOG_verbose << "[TransferSlot::~TransferSlot] END [cloudRaid = " << (void*)(cloudRaid.get()) << "]";
 }
 
+void TransferSlot::processTransferStats()
+{
+    const auto transferTypeStrV = std::invoke(
+        [transferType = transfer->type, isRaid = (cloudRaid != nullptr)]() -> std::string_view
+        {
+            switch (transferType)
+            {
+                case PUT:
+                    return "[Upload]";
+                case GET:
+                    return (isRaid ? "[CloudRaid]" : "[Non CloudRaid]");
+                case API:
+                    return "[API]";
+                default:
+                    assert(false && "Unknown transfer type");
+                    return "[Unknown]";
+            }
+        });
+
+    LOG_verbose << "[TransferSlot::processTransferStats] " << transferTypeStrV
+                << " Stats: Mean speed: " << (meanSpeed)
+                << " B/s, Progress: " << transfer->progresscompleted << "/" << transfer->size
+                << " ("
+                << static_cast<unsigned>(
+                       std::round(static_cast<double>(transfer->progresscompleted * 100) /
+                                  static_cast<double>(transfer->size)))
+                << "%)"
+                << ". TransferSlotStats: FailedRequestRatio = " << tsStats.failedRequestRatio()
+                << ". Average connect time: " << tsStats.averageConnectTime()
+                << " ms. Average start transfer time: " << tsStats.averageStartTransferTime()
+                << " ms. Total requests = " << tsStats.mNumTotalRequests
+                << " (with calculated latency: " << tsStats.mNumRequestsWithCalculatedLatency
+                << "). Failed requests = " << tsStats.mNumFailedRequests
+                << ". [Transfer->name = " << transfer->localfilename << "]"
+                << " [cloudRaid = " << (void*)(cloudRaid.get()) << "]";
+
+    const auto addedToTransferStats = transfer->addTransferStats();
+    LOG_verbose << "[TransferSlot::processTransferStats] " << transferTypeStrV
+                << " Stats for this transfer have " << (addedToTransferStats ? "" : "NOT ")
+                << "been added to the global transfer stats";
+    if (addedToTransferStats)
+    {
+        transfer->collectAndPrintTransferStatsIfLimitReached();
+    }
+}
+
 void TransferSlot::toggleport(HttpReqXfer *req)
 {
-    if (!memcmp(req->posturl.c_str(), "http:", 5))
+    if (Utils::startswith(req->posturl, "http:"))
     {
        size_t portendindex = req->posturl.find("/", 8);
        size_t portstartindex = req->posturl.find(":", 8);
@@ -761,13 +789,16 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                                     || reqs[j]->status == REQ_UPLOAD_PREPARED_BUT_WAIT))
                                 {
                                     LOG_debug << "Conn " << i << " : Including chunk MACs from incomplete/unprocessed (at this end) from connection " << j;
-                                    transfer->progresscompleted += reqs[j]->size;
+                                    transfer->setProgresscompleted(
+                                        static_cast<m_off_t>(reqs[j]->size),
+                                        true /*append*/);
                                     transfer->chunkmacs.finishedUploadChunks(static_cast<HttpReqUL*>(reqs[j].get())->mChunkmacs);
                                 }
                             }
 
                             transfer->chunkmacs.finishedUploadChunks(static_cast<HttpReqUL*>(reqs[i].get())->mChunkmacs);
-                            transfer->progresscompleted += reqs[i]->size;
+                            transfer->setProgresscompleted(static_cast<m_off_t>(reqs[i]->size),
+                                                           true /*append*/);
                             LOG_debug << "Conn " << i << " : Progress completed: " << transfer->progresscompleted << "/" << transfer->size;
                             assert(transfer->progresscompleted == transfer->size);
 
@@ -789,8 +820,8 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                                 meanSpeed = mTransferSpeed.getMeanSpeed();
                                 LOG_verbose
                                     << "[TransferSlot::doio] [Upload] COMPLETED (with a diff)"
-                                    << " Speed: " << (speed / 1)
-                                    << " KB/s. Mean speed: " << (meanSpeed / 1)
+                                    << " Speed: " << (speed / 1024)
+                                    << " KB/s. Mean speed: " << (meanSpeed / 1024)
                                     << " KB/s [diff = " << diff << "]"
                                     << " [progressreported = " << progressreported
                                     << ", transfer->progresscompleted = "
@@ -825,8 +856,9 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                                 break;
                             }
 
-                            if (e == DAEMON_EFAILED || (reqs[i]->contenttype.find("text/html") != string::npos
-                                    && !memcmp(reqs[i]->posturl.c_str(), "http:", 5)))
+                            if (e == DAEMON_EFAILED ||
+                                (reqs[i]->contenttype.find("text/html") != string::npos &&
+                                 Utils::startswith(reqs[i]->posturl, "http:")))
                             {
                                 client->usehttps = true;
                                 client->app->notify_change_to_https();
@@ -852,7 +884,8 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                         }
 
                         transfer->chunkmacs.finishedUploadChunks(static_cast<HttpReqUL*>(reqs[i].get())->mChunkmacs);
-                        transfer->progresscompleted += reqs[i]->size;
+                        transfer->setProgresscompleted(static_cast<m_off_t>(reqs[i]->size),
+                                                       true /*append*/);
                         LOG_debug << "Conn " << i << " : Progress completed: " << transfer->progresscompleted << "/" << transfer->size;
 
                         updatecontiguousprogress();
@@ -945,8 +978,8 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                         }
                         else
                         {
-                            if (reqs[i]->contenttype.find("text/html") != string::npos
-                                    && !memcmp(reqs[i]->posturl.c_str(), "http:", 5))
+                            if (reqs[i]->contenttype.find("text/html") != string::npos &&
+                                Utils::startswith(reqs[i]->posturl, "http:"))
                             {
                                 LOG_warn << "Conn " << i << " : Invalid Content-Type detected during download: " << reqs[i]->contenttype;
                                 client->usehttps = true;
@@ -1053,7 +1086,8 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                                 LOG_verbose << "Conn " << i << " : Async read succeeded (size: " << asyncIO[i]->dataBufferLen << ")";
                                 m_off_t npos = asyncIO[i]->posOfBuffer + asyncIO[i]->dataBufferLen;
                                 string finaltempurl = transferbuf.tempURL(i);
-                                if (client->usealtupport && !memcmp(finaltempurl.c_str(), "http:", 5))
+                                if (client->usealtupport &&
+                                    Utils::startswith(finaltempurl, "http:"))
                                 {
                                     size_t index = finaltempurl.find("/", 8);
                                     if(index != string::npos && finaltempurl.find(":", 8) == string::npos)
@@ -1171,6 +1205,13 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
                                                       newInputBufferSupplied,
                                                       pauseConnectionInputForRaid,
                                                       client->httpio->uploadSpeed);
+                if (posrange == std::make_pair(m_off_t{-1}, m_off_t{-1}))
+                {
+                    LOG_warn << "Conn " << i
+                             << " : Received error position, transfer must be retried";
+                    transfer->chunkmacs.clear();
+                    return transfer->failed(API_EARGS, committer);
+                }
 
                 // we might have a raid-reassembled block to write, or a previously loaded block, or a skip block to process.
                 bool newOutputBufferSupplied = false;
@@ -1432,14 +1473,14 @@ void TransferSlot::doio(MegaClient* client, TransferDbCommitter& committer)
         LOG_warn << "Failed chunk(s) due to a timeout: no data moved for " << (XFERTIMEOUT/10) << " seconds" ;
         failure = true;
         bool changeport = false;
-
-        if (transfer->type == GET && client->autodownport && !memcmp(transferbuf.tempURL(0).c_str(), "http:", 5))
+        bool startsWithHttp = Utils::startswith(transferbuf.tempURL(0), "http:");
+        if (transfer->type == GET && client->autodownport && startsWithHttp)
         {
             LOG_debug << "Automatically changing download port due to a timeout";
             client->usealtdownport = !client->usealtdownport;
             changeport = true;
         }
-        else if (transfer->type == PUT && client->autoupport && !memcmp(transferbuf.tempURL(0).c_str(), "http:", 5))
+        else if (transfer->type == PUT && client->autoupport && startsWithHttp)
         {
             LOG_debug << "Automatically changing upload port due to a timeout";
             client->usealtupport = !client->usealtupport;
@@ -1548,8 +1589,8 @@ void TransferSlot::prepareRequest(const std::shared_ptr<HttpReqXfer>& httpReq, c
     string finaltempURL = tempURL;
     if (!finaltempURL.empty() &&
         ((transfer->type == GET && transfer->client->usealtdownport) ||
-        (transfer->type == PUT && transfer->client->usealtupport)) &&
-            !memcmp(finaltempURL.c_str(), "http:", 5))
+         (transfer->type == PUT && transfer->client->usealtupport)) &&
+        Utils::startswith(finaltempURL, "http:"))
     {
         size_t index = finaltempURL.find("/", 8);
         if (index != string::npos && finaltempURL.find(":", 8) == string::npos)
@@ -1583,7 +1624,9 @@ std::pair<error, dstime> TransferSlot::processRequestFailure(MegaClient* client,
              << " [httpReq = " << (void*)httpReq.get()
              << "] [totalFailedRequests = " << tsStats.mNumFailedRequests << "]";
 
-    if (httpReq->httpstatus && httpReq->contenttype.find("text/html") != string::npos && !memcmp(httpReq->posturl.c_str(), "http:", 5))
+    bool postUrlStartsWithHttp = Utils::startswith(httpReq->posturl, "http:");
+    if (httpReq->httpstatus && httpReq->contenttype.find("text/html") != string::npos &&
+        postUrlStartsWithHttp)
     {
         LOG_warn << "Conn " << channel << " : Invalid Content-Type detected on failed chunk: " << httpReq->contenttype << " [httpReq = " << (void*)httpReq.get() << "]";
         client->usehttps = true;
@@ -1651,13 +1694,13 @@ std::pair<error, dstime> TransferSlot::processRequestFailure(MegaClient* client,
             failure = true;
             bool changeport = false;
 
-            if (transfer->type == GET && client->autodownport && !memcmp(httpReq->posturl.c_str(), "http:", 5))
+            if (transfer->type == GET && client->autodownport && postUrlStartsWithHttp)
             {
                 LOG_debug << "Conn " << channel << " : Automatically changing download port";
                 client->usealtdownport = !client->usealtdownport;
                 changeport = true;
             }
-            else if (transfer->type == PUT && client->autoupport && !memcmp(httpReq->posturl.c_str(), "http:", 5))
+            else if (transfer->type == PUT && client->autoupport && postUrlStartsWithHttp)
             {
                 LOG_debug << "Conn " << channel << " : Automatically changing upload port";
                 client->usealtupport = !client->usealtupport;
@@ -1749,25 +1792,17 @@ std::pair<error, dstime> TransferSlot::processRaidReq(size_t connection, m_off_t
 
 void TransferSlot::processRequestLatency(const std::shared_ptr<HttpReqXfer>& req)
 {
-    if (!req->isLatencyProcessed)
-    {
-        if (req->mConnectTime > -1 && req->mStartTransferTime > -1)
-        {
-            if (req->mConnectTime > 0)
-            {
-                // mConnectTime, populated from CURLINFO_CONNECT_TIME, can be 0
-                // for reused connections. We want to calculate the network performance,
-                // so we exclude reused connections.
-                // For coherence, we only include CURLINFO_STARTTRANSFER_TIME when
-                // we have included CURLINFO_CONNECT_TIME, because we only have one
-                // variable for "numRequestsWithCalculatedLatency" to calculate both averages.
-                tsStats.mTotalConnectTime += req->mConnectTime;
-                tsStats.mTotalStartTransferTime += req->mStartTransferTime;
-                ++tsStats.mNumRequestsWithCalculatedLatency;
-            }
-            req->isLatencyProcessed = true;
-        }
-    }
+    if (req->isLatencyProcessed)
+        return;
+
+    if (const auto valuesAreUninitialized = (req->mConnectTime < 0 || req->mStartTransferTime < 0);
+        valuesAreUninitialized)
+        return;
+
+    tsStats.mTotalConnectTime += req->mConnectTime;
+    tsStats.mTotalStartTransferTime += req->mStartTransferTime;
+    ++tsStats.mNumRequestsWithCalculatedLatency;
+    req->isLatencyProcessed = true;
 }
 
 } // namespace

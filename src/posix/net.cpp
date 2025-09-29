@@ -20,8 +20,9 @@
  */
 
 #include "mega.h"
-#include "mega/posix/meganet.h"
+#include "mega/hashcash.h"
 #include "mega/logging.h"
+#include "mega/posix/meganet.h"
 
 #if defined(USE_OPENSSL)
 #include <openssl/err.h>
@@ -205,7 +206,7 @@ CurlHttpIO::CurlHttpIO()
     curl_version_info_data* data = curl_version_info(CURLVERSION_NOW);
     if (data->version)
     {
-        LOG_debug << "cURL version: " << data->version;
+        LOG_debug << "curl version: " << data->version;
     }
 
     if (data->ssl_version)
@@ -220,21 +221,26 @@ CurlHttpIO::CurlHttpIO()
             throw std::runtime_error("Unsupported SSL backend (GSKit). Aborting.");
         }
 
-        if (data->version_num < 0x072c00 // At least cURL 7.44.0
-        #ifdef USE_OPENSSL
-                && !(strstr(curlssl.c_str(), "openssl") && data->version_num > 0x070b00)
-                // or cURL 7.11.0 with OpenSSL
-        #endif
-            )
+        if (data->version_num < 0x072c00 // At least curl 7.44.0
+#ifdef USE_OPENSSL
+            && !(strstr(curlssl.c_str(), "openssl") && data->version_num > 0x070b00)
+        // or curl 7.11.0 with OpenSSL
+#endif
+        )
         {
-            LOG_fatal << "cURL built without public key pinning support. Aborting.";
-            throw std::runtime_error("cURL built without public key pinning support. Aborting.");
+            LOG_fatal << "curl built without public key pinning support. Aborting.";
+            throw std::runtime_error("curl built without public key pinning support. Aborting.");
         }
     }
 
     if (data->libz_version)
     {
         LOG_debug << "libz version: " << data->libz_version;
+    }
+
+    if (data->zstd_version)
+    {
+        LOG_debug << "zstd version: " << data->zstd_version;
     }
 
     int i;
@@ -248,8 +254,18 @@ CurlHttpIO::CurlHttpIO()
 
     if (!data->protocols[i] || !(data->features & CURL_VERSION_SSL))
     {
-        LOG_fatal << "cURL built without HTTP/HTTPS support. Aborting.";
-        throw std::runtime_error("cURL built without HTTP/HTTPS support. Aborting.");
+        LOG_fatal << "curl built without HTTP/HTTPS support. Aborting.";
+        throw std::runtime_error("curl built without HTTP/HTTPS support. Aborting.");
+    }
+
+    if (data->ares)
+    {
+        int version{data->ares_num};
+        int major{(version >> 16) & 0xFF};
+        int minor{(version >> 8) & 0xFF};
+        int patch{version & 0xFF};
+        LOG_debug << "curl built with c-ares backend as DNS resolver.";
+        LOG_debug << "c-ares version: " << major << "." << minor << "." << patch;
     }
 
     curlipv6 = data->features & CURL_VERSION_IPV6;
@@ -284,7 +300,7 @@ CurlHttpIO::CurlHttpIO()
 #endif
     {
         LOG_debug << "Initializing OpenSSL locking callbacks";
-        int numLocks = CRYPTO_num_locks();
+        size_t numLocks = CRYPTO_num_locks();
         sslMutexes = new std::recursive_mutex*[numLocks];
         memset(sslMutexes, 0, numLocks * sizeof(std::recursive_mutex*));
 #if OPENSSL_VERSION_NUMBER >= 0x10000000  || defined (LIBRESSL_VERSION_NUMBER)
@@ -561,6 +577,29 @@ void CurlHttpIO::setuseragent(string* u)
     useragent = *u;
 }
 
+bool CurlHttpIO::setdnsservers(const char* servers)
+{
+    const curl_version_info_data* data = curl_version_info(CURLVERSION_NOW);
+
+    if (!data->ares)
+    {
+        return false;
+    }
+
+    if (servers)
+    {
+        lastdnspurge = Waiter::ds + DNS_CACHE_TIMEOUT_DS / 2;
+        if (DNS_CACHE_EXPIRES)
+        {
+            dnscache.clear();
+        }
+
+        dnsservers = servers;
+        LOG_debug << "Setting custom DNS servers: " << dnsservers;
+    }
+    return true;
+}
+
 void CurlHttpIO::disconnect()
 {
     LOG_debug << "Reinitializing the network layer";
@@ -637,12 +676,15 @@ void CurlHttpIO::disconnect()
 
 bool CurlHttpIO::setmaxdownloadspeed(m_off_t bpslimit)
 {
+    LOG_debug << "[CurlHttpIO::setmaxdownloadspeed] Set max download speed to " << bpslimit
+              << " B/s";
     maxspeed[GET] = bpslimit;
     return true;
 }
 
 bool CurlHttpIO::setmaxuploadspeed(m_off_t bpslimit)
 {
+    LOG_debug << "[CurlHttpIO::setmaxuploadspeed] Set max upload speed to " << bpslimit << " B/s";
     maxspeed[PUT] = bpslimit;
     return true;
 }
@@ -792,50 +834,21 @@ struct curl_slist* CurlHttpIO::clone_curl_slist(struct curl_slist* inlist)
     return outlist;
 }
 
-// Generate cash function
-// FIXME: make async/make multithreaded
-std::string gencash(const string& token, uint8_t easiness)
+const char* CurlHttpIO::pubkeyForUrl(const char* url) const
 {
-    // Calculate threshold from easiness
-    // easiness: encoded threshold (maximum acceptable value in the first 32 byte of the
-    // hash (little endian) - the lower, the harder to solve)
-    uint32_t threshold =
-        static_cast<uint32_t>((((easiness & 63) << 1) + 1) << ((easiness >> 6) * 7 + 3));
-    
-    // Token is 64 chars in B64, we need the 48 bytes in binary
-    string tokenBinary = Base64::atob(token);
-
-    // Buffer to hold 4-byte prefix + 262144 * 48 bytes of the token
-    std::vector<uint8_t> buffer(4 + 262144 * 48); // total size = 12582916
-    for (auto i = 0; i < 262144; ++i)
+    if (Utils::startswith(url, APIURL.c_str()) ||
+        Utils::startswith(url, MegaClient::REQSTATURL.c_str()))
     {
-        std::copy(tokenBinary.begin(), tokenBinary.end(), buffer.begin() + 4 + i * 48);
+        return "sha256//0W38e765pAfPqS3DqSVOrPsC4MEOvRBaXQ7nY1AJ47E=;" // API 1
+               "sha256//gSRHRu1asldal0HP95oXM/5RzBfP1OIrPjYsta8og80="; // API 2
     }
-
-    uint32_t* prefixptr = reinterpret_cast<uint32_t*>(buffer.data());
-
-    for (;;)
+    else if (Utils::startswith(url, MegaClient::SFUSTATSURL.c_str()))
     {
-        // increment prefix (the final result, but not its correctness, will depend on the CPU's endianness)
-	// we do not have an explicit abort condition (the actual easiness will be lenient enough)
-	(*prefixptr)++;
-
-        // SHA-256 hash
-        HashSHA256 hasher;
-        hasher.add((const byte*)buffer.data(), static_cast<unsigned>(buffer.size()));
-
-        string hash;
-        hasher.get(&hash);
-
-        if (htonl(*(reinterpret_cast<uint32_t*>(hash.data()))) <= threshold)
-        {
-            // success - return the prefix
-            string prefixToReturn(buffer.begin(), buffer.begin() + 4);
-            return Base64::btoa(prefixToReturn);
-        }
+        return "sha256//2ZAltznnzY3Iee3NIZPOgqIQVNXVjvDEjWTmAreYVFU=;" // STATSSFU  1
+               "sha256//7jLrvaEtfqTCHew0iibvEm2k61iatru+rwhFD7g3nxA="; // STATSSFU  2
     }
+    return nullptr;
 }
-
 void CurlHttpIO::send_request(CurlHttpContext* httpctx)
 {
     CurlHttpIO* httpio = httpctx->httpio;
@@ -872,15 +885,18 @@ void CurlHttpIO::send_request(CurlHttpContext* httpctx)
         }
     }
 
+    req->outpos = 0;
+
     httpctx->headers = clone_curl_slist(req->type == REQ_JSON ? httpio->contenttypejson : httpio->contenttypebinary);
     httpctx->posturl = req->posturl;
 
     if (!req->mHashcashToken.empty())
     {
-        string nextValue = gencash(req->mHashcashToken, req->mHashcashEasiness);
+        const auto nextValue =
+            gencash(req->mHashcashToken, req->mHashcashEasiness, req->mCancelSnapshot);
         string xHashcashHeader{"X-Hashcash: 1:" + req->mHashcashToken + ":" + std::move(nextValue)};
         httpctx->headers = curl_slist_append(httpctx->headers, xHashcashHeader.c_str());
-        LOG_warn << "X-Hashcash computed: " << xHashcashHeader;
+        LOG_warn << httpctx->req->getLogName() << "X-Hashcash computed: " << xHashcashHeader;
         req->mHashcashToken.clear();
     }
 
@@ -951,15 +967,9 @@ void CurlHttpIO::send_request(CurlHttpContext* httpctx)
         if (!httpio->disablepkp && req->protect)
         {
         #if LIBCURL_VERSION_NUM >= 0x072c00 // At least cURL 7.44.0
-            if (curl_easy_setopt(curl, CURLOPT_PINNEDPUBLICKEY,
-                  !memcmp(req->posturl.data(), httpio->APIURL.data(), httpio->APIURL.size())
-                  || !memcmp(req->posturl.data(), MegaClient::REQSTATURL.data(), MegaClient::REQSTATURL.size())
-                    ? "sha256//0W38e765pAfPqS3DqSVOrPsC4MEOvRBaXQ7nY1AJ47E=;" //API 1
-                      "sha256//gSRHRu1asldal0HP95oXM/5RzBfP1OIrPjYsta8og80="  //API 2
-                    : (!memcmp(req->posturl.data(), MegaClient::SFUSTATSURL.data(), MegaClient::SFUSTATSURL.size()))
-                           ? "sha256//2ZAltznnzY3Iee3NIZPOgqIQVNXVjvDEjWTmAreYVFU=;"  // STATSSFU  1
-                             "sha256//7jLrvaEtfqTCHew0iibvEm2k61iatru+rwhFD7g3nxA="   // STATSSFU  2
-                                 : nullptr) ==  CURLE_OK)
+            if (curl_easy_setopt(curl,
+                                 CURLOPT_PINNEDPUBLICKEY,
+                                 httpio->pubkeyForUrl(req->posturl)) == CURLE_OK)
             {
                 curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
                 if (httpio->pkpErrors)
@@ -1042,6 +1052,15 @@ void CurlHttpIO::send_request(CurlHttpContext* httpctx)
             {
                 curl_easy_setopt(curl, CURLOPT_HTTPPROXYTUNNEL, 1L);
             }
+        }
+        else if (httpio->proxytype == Proxy::NONE)
+        {
+            curl_easy_setopt(curl, CURLOPT_PROXY, "");
+        }
+
+        if (!httpio->dnsservers.empty())
+        {
+            curl_easy_setopt(curl, CURLOPT_DNS_SERVERS, httpio->dnsservers.c_str());
         }
 
         httpio->numconnections[httpctx->d]++;
@@ -1225,7 +1244,14 @@ int CurlHttpIO::debug_callback(CURL*, curl_infotype type, char* data, size_t siz
         NET_verbose << (debugdata ? static_cast<HttpReq*>(debugdata)->getLogName() : string())
                     << "cURL: " << data << errnoInfo;
     }
-
+    else if (type == CURLINFO_HEADER_IN && size)
+    {
+        NET_verbose << "CURL incoming header: " << std::string(data, size);
+    }
+    else if (type == CURLINFO_HEADER_OUT && size)
+    {
+        NET_verbose << "CURL outgoing header: " << std::string(data, size);
+    }
     return 0;
 }
 
@@ -1452,6 +1478,7 @@ void CurlHttpIO::cancel(HttpReq* req)
         }
 
         req->httpstatus = 0;
+        req->mErrCode = 0;
 
         if (req->status != REQ_FAILURE)
         {
@@ -1542,6 +1569,7 @@ bool CurlHttpIO::multidoio(CURLM *curlmhandle)
                 measureLatency(msg->easy_handle, req);
 
                 CURLcode errorCode = msg->data.result;
+                req->mErrCode = errorCode;
                 if (errorCode != CURLE_OK && errorCode != CURLE_HTTP_RETURNED_ERROR && errorCode != CURLE_WRITE_ERROR)
                 {
                     LOG_debug << req->getLogName() << "CURLMSG_DONE with error " << errorCode
@@ -1571,10 +1599,9 @@ bool CurlHttpIO::multidoio(CURLM *curlmhandle)
                                     while (slist)
                                     {
                                         LOG_warn << req->getLogName() << i << ": " << slist->data;
-                                        if (i == 0 && !memcmp("Issuer:", slist->data, 7))
+                                        if (i == 0 && Utils::startswith(slist->data, "Issuer:"))
                                         {
-                                            const char *issuer = NULL;
-                                            issuer = strstr(slist->data, "CN = ");
+                                            const char* issuer = strstr(slist->data, "CN = ");
                                             if (issuer)
                                             {
                                                 issuer += 5;
@@ -1615,12 +1642,15 @@ bool CurlHttpIO::multidoio(CURLM *curlmhandle)
                 long httpstatus;
                 curl_easy_getinfo(msg->easy_handle, CURLINFO_RESPONSE_CODE, &httpstatus);
                 req->httpstatus = int(httpstatus);
+                // Get the used ip address, if any.
+                char* resolvedIpAddress = nullptr;
+                curl_easy_getinfo(msg->easy_handle, CURLINFO_PRIMARY_IP, &resolvedIpAddress);
 
                 LOG_debug << req->getLogName()
                           << "CURLMSG_DONE with HTTP status: " << req->httpstatus << " from "
                           << (req->httpiohandle ?
                                   (((CurlHttpContext*)req->httpiohandle)->hostname + " - " +
-                                   ((CurlHttpContext*)req->httpiohandle)->hostip) :
+                                   (resolvedIpAddress ? resolvedIpAddress : "")) :
                                   "(unknown) ");
                 if (req->httpstatus)
                 {
@@ -1690,11 +1720,16 @@ bool CurlHttpIO::multidoio(CURLM *curlmhandle)
                 }
 
                 // check httpstatus, redirecturl and response length
-                req->status = ((req->httpstatus == 200 || (req->mExpectRedirect && req->isRedirection() && req->mRedirectURL.size()))
-                               && errorCode != CURLE_PARTIAL_FILE
-                               && (req->contentlength < 0
-                                   || req->contentlength == ((req->buf || req->mChunked) ? req->bufpos : (int)req->in.size())))
-                        ? REQ_SUCCESS : REQ_FAILURE;
+                m_off_t actualLength = req->buf != nullptr || req->mChunked ?
+                                           req->bufpos :
+                                           static_cast<m_off_t>(req->in.size());
+                req->status =
+                    ((req->httpstatus == 200 ||
+                      (req->mExpectRedirect && req->isRedirection() && req->mRedirectURL.size())) &&
+                     errorCode != CURLE_PARTIAL_FILE &&
+                     (req->contentlength < 0 || req->contentlength == actualLength)) ?
+                        REQ_SUCCESS :
+                        REQ_FAILURE;
 
                 if (req->status == REQ_SUCCESS)
                 {
@@ -1707,8 +1742,7 @@ bool CurlHttpIO::multidoio(CURLM *curlmhandle)
                     LOG_warn << req->getLogName() << "REQ_FAILURE."
                              << " Status: " << req->httpstatus << " CURLcode: " << errorCode
                              << "  Content-Length: " << req->contentlength << "  buffer? "
-                             << (req->buf != NULL)
-                             << "  bufferSize: " << (req->buf ? req->bufpos : (int)req->in.size());
+                             << (req->buf != NULL) << "  bufferSize: " << actualLength;
                 }
 
                 if (req->httpstatus)
@@ -1742,6 +1776,7 @@ bool CurlHttpIO::multidoio(CURLM *curlmhandle)
                         dnsEntry.ipv4timestamp = 0;
                     }
 
+                    req->mDnsFailure = true;
                     ipv6requestsenabled = !httpctx->isIPv6 && ipv6available();
 
                     if (ipv6requestsenabled)
@@ -1996,54 +2031,63 @@ size_t CurlHttpIO::write_data(void* ptr, size_t size, size_t nmemb, void* target
 }
 
 // set contentlength according to Original-Content-Length header
-size_t CurlHttpIO::check_header(void* ptr, size_t size, size_t nmemb, void* target)
+size_t CurlHttpIO::check_header(const char* ptr, size_t size, size_t nmemb, void* target)
 {
     HttpReq *req = (HttpReq*)target;
     size_t len = size * nmemb;
     if (len > 2)
     {
-        NET_verbose << req->getLogName() << "Header: " << string((const char*)ptr, len - 2);
+        NET_verbose << req->getLogName() << "Header: " << string(ptr, len - 2);
     }
-
-    if (len > 5 && !memcmp(ptr, "HTTP/", 5))
+    assert(Utils::endswith(ptr, len, "\r\n", 2));
+    const char* val = nullptr;
+    if (Utils::startswith(ptr, "HTTP/"))
     {
         if (req->contentlength >= 0)
         {
             // For authentication with some proxies, cURL sends two requests in the context of a single one
             // Content-Length is reset here to not take into account the header from the first response
 
-            LOG_warn << "Receiving a second response. Resetting Content-Length";
+            LOG_warn << req->getLogName()
+                     << "Receiving a second response. Resetting Content-Length";
             req->contentlength = -1;
         }
 
         return size * nmemb;
     }
-    else if (len > 15 && !memcmp(ptr, "Content-Length:", 15))
+    else if ((val = Utils::startswith(ptr, "Content-Length:")) != nullptr)
     {
         if (req->contentlength < 0)
         {
-            req->setcontentlength(atoll((char*)ptr + 15));
+            req->setcontentlength(atoll(val));
         }
     }
-    else if (len > 24 && !memcmp(ptr, "Original-Content-Length:", 24))
+    else if ((val = Utils::startswith(ptr, "Original-Content-Length:")) != nullptr)
     {
-        req->setcontentlength(atoll((char*)ptr + 24));
+        req->setcontentlength(atoll(val));
     }
-    else if (len > 17 && !memcmp(ptr, "X-MEGA-Time-Left:", 17))
+    else if ((val = Utils::startswith(ptr, "X-MEGA-Time-Left:")) != nullptr)
     {
-        req->timeleft = atol((char*)ptr + 17);
+        req->timeleft = atol(val);
     }
-    else if (len > 15 && !memcmp(ptr, "Content-Type:", 13))
+    else if ((val = Utils::startswith(ptr, "Content-Type:")) != nullptr)
     {
-        req->contenttype.assign((char *)ptr + 13, len - 15);
+        req->contenttype.assign(val, len - 15); // length of "Content-Type:" + 2
     }
-    else if (len >= (11 + 7) && !memcmp(ptr, "X-Hashcash:", 11))
+    else if ((val = Utils::startswith(ptr, "X-Hashcash:")) != nullptr)
     {
-        // trim trailing CRLF
-        while (len > 11 && static_cast<uint8_t*>(ptr)[len - 1] < ' ') len--;
-
-        string buffer{(char*)ptr + 11, len - 11};
-        LOG_warn << "X-Hashcash received:" << buffer;
+        const char* end = ptr + len - 3; // point to the char before CRLF terminator
+        if (end - val < 4) // minimum hashcash len is 5
+        {
+            LOG_warn << req->getLogName() << "Ignoring too short X-Hashcash header";
+            return len;
+        }
+        // trim trailing CRLF, from right to left, up to end of "X-Hashcash:"
+        while (end > val && *end < ' ')
+            end--;
+        assert(end - val >= 0);
+        string buffer{val, static_cast<size_t>((end - val) + 1)};
+        LOG_warn << req->getLogName() << "X-Hashcash received:" << buffer;
 
         // Example of hashcash header
         // 1:100:1731410499:RUvIePV2PNO8ofg8xp1aT5ugBcKSEzwKoLBw9o4E6F_fmn44eC3oMpv388UtFl2K
@@ -2338,11 +2382,12 @@ int CurlHttpIO::cert_verify_callback(X509_STORE_CTX* ctx, void* req)
             BN_bn2bin(rsaN, buf);
 
             // check the public key matches for the URL of the connection (API or SFU-stats)
-            if ((!memcmp(request->posturl.data(), httpio->APIURL.data(), httpio->APIURL.size())
-                    && (!memcmp(buf, APISSLMODULUS1, sizeof APISSLMODULUS1 - 1) || !memcmp(buf, APISSLMODULUS2, sizeof APISSLMODULUS2 - 1)))
-                ||(!memcmp(request->posturl.data(), MegaClient::SFUSTATSURL.data(), MegaClient::SFUSTATSURL.size())
-                    && (!memcmp(buf, SFUSTATSSSLMODULUS, sizeof SFUSTATSSSLMODULUS - 1) || !memcmp(buf, SFUSTATSSSLMODULUS2, sizeof SFUSTATSSSLMODULUS2 - 1)))
-                )
+            if ((Utils::startswith(request->posturl, httpio->APIURL) &&
+                 (!memcmp(buf, APISSLMODULUS1, sizeof APISSLMODULUS1 - 1) ||
+                  !memcmp(buf, APISSLMODULUS2, sizeof APISSLMODULUS2 - 1))) ||
+                (Utils::startswith(request->posturl, MegaClient::SFUSTATSURL) &&
+                 (!memcmp(buf, SFUSTATSSSLMODULUS, sizeof SFUSTATSSSLMODULUS - 1) ||
+                  !memcmp(buf, SFUSTATSSSLMODULUS2, sizeof SFUSTATSSSLMODULUS2 - 1))))
             {
                 BN_bn2bin(rsaE, buf);
 
@@ -2385,7 +2430,7 @@ int CurlHttpIO::cert_verify_callback(X509_STORE_CTX* ctx, void* req)
                                                  NID_commonName,
                                                  (char *)request->sslfakeissuer.data(),
                                                  int(request->sslfakeissuer.size()));
-            request->sslfakeissuer.resize(len > 0 ? len : 0);
+            request->sslfakeissuer.resize(len > 0 ? static_cast<size_t>(len) : 0);
             LOG_debug << "Fake certificate issuer: " << request->sslfakeissuer;
         }
     }

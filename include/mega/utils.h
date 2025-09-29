@@ -23,6 +23,7 @@
 #define MEGA_UTILS_H 1
 #include "types.h"
 
+#include <algorithm>
 #include <charconv>
 #include <condition_variable>
 #include <mutex>
@@ -382,8 +383,26 @@ public:
 
     // join({"a", "new", "loom"}, "; ") -> "a; new; loom"
     static std::string join(const std::vector<std::string>& items, const std::string& with);
-    static bool startswith(const std::string& str, const std::string& start);
-    static bool startswith(const std::string& str, char chr);
+    template<typename T>
+    static bool startswith(const std::basic_string<T>& str, const std::basic_string<T>& start);
+
+    template<typename T>
+    static bool startswith(const std::basic_string<T>& str, T chr)
+    {
+        return str.length() >= 1 && chr == str.front();
+    }
+
+    template<typename T>
+    static const T* startswith(const T* str, const T* start);
+
+    template<typename T>
+    static const T* startswith(const std::basic_string<T>& str, const T* start)
+    {
+        return startswith(str.c_str(), start);
+    }
+
+    template<typename T>
+    static bool endswith(const T* str, size_t strLen, const T* suffix, size_t suffixLen);
     static bool endswith(const std::string& str, char chr);
     static const std::string _trimDefaultChars;
     // return string with trimchrs removed from front and back of given string str
@@ -398,6 +417,8 @@ public:
     static std::string getenv(const std::string& key, const std::string& def);
     static void setenv(const std::string& key, const std::string& value);
     static void unsetenv(const std::string& key);
+
+    static std::string getIcuVersion();
 };
 
 extern m_time_t m_time(m_time_t* tt = NULL);
@@ -460,8 +481,7 @@ class chunkmac_map
     // this is the map key for how far that collapsing has progressed
     m_off_t macsmacSoFarPos = -1;
 
-    m_off_t progresscontiguous = 0;
-
+    m_off_t progresscontiguous{0};
 
 public:
     int64_t macsmac(SymmCipher *cipher);
@@ -477,11 +497,14 @@ public:
     m_off_t updateContiguousProgress(m_off_t fileSize);
     void updateMacsmacProgress(SymmCipher *cipher);
     void copyEntriesTo(chunkmac_map& other);
+    m_off_t copyEntriesToUntilRaidlineBeforePos(m_off_t maxPos, chunkmac_map& other);
     void copyEntryTo(m_off_t pos, chunkmac_map& other);
     void debugLogOuputMacs();
 
     void ctr_encrypt(m_off_t chunkid, SymmCipher *cipher, byte *chunkstart, unsigned chunksize, m_off_t startpos, int64_t ctriv, bool finishesChunk);
     void ctr_decrypt(m_off_t chunkid, SymmCipher *cipher, byte *chunkstart, unsigned chunksize, m_off_t startpos, int64_t ctriv, bool finishesChunk);
+    void setProgressContiguous(const m_off_t p);
+    void swap(chunkmac_map& other);
 
     size_t size() const
     {
@@ -491,12 +514,7 @@ public:
     {
         mMacMap.clear();
         macsmacSoFarPos = -1;
-        progresscontiguous = 0;
-    }
-    void swap(chunkmac_map& other) {
-        mMacMap.swap(other.mMacMap);
-        std::swap(macsmacSoFarPos, other.macsmacSoFarPos);
-        std::swap(progresscontiguous, other.progresscontiguous);
+        setProgressContiguous(0);
     }
 };
 
@@ -509,6 +527,7 @@ struct CacheableWriter
     void serializecstr(const char* field, bool storeNull);  // may store the '\0' also for backward compatibility. Only use for utf8!  (std::string storing double byte chars will only store 1 byte)
     void serializepstr(const string* field);  // uses string size() not strlen
     void serializestring(const string& field);
+    void serializestring(const std::wstring& field);
     void serializestring_u32(const string& field); // use uint32_t for the size field
     void serializecompressedu64(uint64_t field);
     void serializecompressedi64(int64_t field) { serializecompressedu64(static_cast<uint64_t>(field)); }
@@ -544,6 +563,7 @@ struct CacheableReader
 
     bool unserializebinary(byte* data, size_t len);
     bool unserializecstr(string& s, bool removeNull); // set removeNull if this field stores the terminating '\0' at the end
+    bool unserializestring(std::wstring& s);
     bool unserializestring(string& s);
     bool unserializestring_u32(string& s);
     bool unserializecompressedu64(uint64_t& field);
@@ -678,6 +698,13 @@ public:
         return mNotifications.size();
     }
 
+    std::deque<T> popAll()
+    {
+        std::lock_guard<std::mutex> g(m);
+        std::deque<T> batch;
+        batch.swap(mNotifications);
+        return batch;
+    }
 };
 
 template<class K, class V>
@@ -951,6 +978,7 @@ struct SyncTransferCount
     bool operator==(const SyncTransferCount& rhs) const;
     bool operator!=(const SyncTransferCount& rhs) const;
     void operator-=(const SyncTransferCount& rhs);
+    void clearPendingValues();
 
     uint32_t mCompleted = 0;
     uint32_t mPending = 0;
@@ -966,6 +994,8 @@ struct SyncTransferCounts
 
     // returns progress 0.0 to 1.0
     double progress(m_off_t inflightProgress) const;
+    m_off_t pendingTransferBytes() const;
+    void clearPendingValues();
 
     SyncTransferCount mDownloads;
     SyncTransferCount mUploads;
@@ -1619,9 +1649,17 @@ inline Range range(const unsigned start, const unsigned end)
  * @param end The ending value of the range (exclusive).
  * @return A Range object representing the range from 0 to end.
  */
-inline Range range(const unsigned end)
+template<typename T, std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<T, bool>, int> = 0>
+inline Range range(const T end)
 {
-    return range(0, end);
+    if constexpr (std::is_signed_v<T>)
+    {
+        if (end <= 0)
+        {
+            return range(0u);
+        }
+    }
+    return range(0u, static_cast<unsigned>(end));
 }
 
 /**
@@ -1659,6 +1697,26 @@ inline const char* getConstCharPtr(const std::optional<std::string>& opt)
 {
     return opt.has_value() ? opt->c_str() : nullptr;
 }
+
+inline bool isAllDigits(const std::string_view s)
+{
+    return std::all_of(begin(s),
+                       end(s),
+                       [](const auto c)
+                       {
+                           return std::isdigit(c);
+                       });
+}
+
+storagestatus_t getStorageStatusFromString(const std::string& storageStateStr);
+
+/**
+ * @brief Returns if path is in file system case insensitive
+ *
+ * The directory must not be empty in order to validate whether case-insensitive access (uppercase
+ * or lowercase naming) is supported. If it can't be checked, it returns std::nullopt
+ */
+std::optional<bool> isCaseInsensitive(const LocalPath& path, FileSystemAccess* fsaccess);
 
 } // namespace mega
 

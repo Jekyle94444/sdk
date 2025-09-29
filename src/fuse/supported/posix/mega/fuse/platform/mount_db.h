@@ -21,8 +21,10 @@ namespace platform
 class MountDB final
   : public fuse::MountDB
 {
-    MountResult check(const Client& client,
+    MountResult check(const common::Client& client,
                       const MountInfo& info) const override;
+
+    MountResult checkName(const std::string& name) const override;
 
     void dispatch();
 

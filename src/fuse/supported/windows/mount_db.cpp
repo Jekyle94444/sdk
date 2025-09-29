@@ -22,6 +22,8 @@ namespace fuse
 namespace platform
 {
 
+using namespace common;
+
 MountResult MountDB::check(const Client& client,
                            const MountInfo& info) const
 {
@@ -33,23 +35,9 @@ MountResult MountDB::check(const Client& client,
     if (FspLoad(nullptr) != STATUS_SUCCESS)
         return MOUNT_BACKEND_UNAVAILABLE;
 
-    // Assume path isn't suitable for a network device.
-    auto maxNameLength = MaxMountNameLength;
-
-    // Path's suitable for mounting as a network device.
-    if (path.empty() || path.isRootPath())
-        maxNameLength = MaxVolumePrefixLength - UNCPrefix.size();
-
-    // Make sure the mount's name is within limits.
-    if (name.size() > maxNameLength)
-    {
-        FUSEErrorF("Name too long: %s (%lu > %lu)",
-                   name.c_str(),
-                   name.size(),
-                   maxNameLength);
-
-        return MOUNT_NAME_TOO_LONG;
-    }
+    // Check the mount's name.
+    if (const auto ret = checkName(name); ret != MOUNT_SUCCESS)
+        return ret;
 
     // An unspecified path signals we should assign a drive letter.
     if (path.empty())
@@ -94,12 +82,61 @@ MountResult MountDB::check(const Client& client,
     return MOUNT_UNEXPECTED;
 }
 
+MountResult MountDB::checkName(const std::string& name) const
+{
+    if (name.empty())
+    {
+        FUSEError1("No name specified");
+
+        return MOUNT_NO_NAME;
+    }
+
+    // Make sure the mount's name is within limits.
+    if (name.size() > MaxMountNameLength)
+    {
+        FUSEErrorF("Name too long: %s (%lu > %lu)", name.c_str(), name.size(), MaxMountNameLength);
+
+        return MOUNT_NAME_TOO_LONG;
+    }
+
+    // Make sure the mount's name contains no invalid characters
+    // Refer https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+    constexpr const char* invalidChars = "<>:\"/\\|?*";
+    if (name.find_first_of(invalidChars) != std::string::npos)
+    {
+        FUSEErrorF("Name contains invalid character(s): %s", name.c_str());
+
+        return MOUNT_NAME_INVALID_CHAR;
+    }
+
+    return MOUNT_SUCCESS;
+}
+
 MountDB::MountDB(ServiceContext& context)
   : fuse::MountDB(context)
   , mReadOnlySecurityDescriptor(readOnlySecurityDescriptor())
   , mReadWriteSecurityDescriptor(readWriteSecurityDescriptor())
 {
     FUSEDebug1("Mount DB constructed");
+}
+
+void MountDB::notifyFileExplorerSetter()
+{
+    auto getPrefixes = [this]()
+    {
+        auto mounts = get(true);
+        std::vector<std::wstring> prefixes;
+        std::transform(mounts.begin(),
+                       mounts.end(),
+                       std::back_inserter(prefixes),
+                       [](const MountInfo& mount)
+                       {
+                           return mount.mPath.asPlatformEncoded(true);
+                       });
+        return prefixes;
+    };
+    if (fileExplorerView() != FILE_EXPLORER_VIEW_NONE)
+        mFileExplorerSetter.notify(getPrefixes);
 }
 
 } // platform

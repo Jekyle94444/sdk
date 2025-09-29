@@ -505,8 +505,10 @@ struct MEGA_API Node : public NodeCore, FileFingerprint
 
     bool isPhotoWithFileAttributes(bool checkPreview) const;
 
+    bool isCreditCardNode() const;
     bool isPasswordNode() const;
-    bool isPasswordNodeFolder() const;
+    bool isPasswordManagerNode() const;
+    bool isPasswordManagerNodeFolder() const;
 
 private:
     // full folder/file key, symmetrically or asymmetrically encrypted
@@ -662,6 +664,10 @@ struct MEGA_API LocalNodeCore
 
     // The fingerprint of the node and/or file we are synced with
     FileFingerprint syncedFingerprint;
+    // The fingreprint scanned from file system
+    // In Android scannedFingerprint is modified to set proper mtime value (from download)
+    // (it isn't possible set mtime in file system)
+    FileFingerprint realScannedFingerprint;
 
     // FILENODE or FOLDERNODE
     nodetype_t type = TYPE_UNKNOWN;

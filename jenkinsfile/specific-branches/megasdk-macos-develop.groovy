@@ -16,18 +16,22 @@ pipeline {
                 VCPKGPATH = "${env.HOME}/jenkins/vcpkg"
                 BUILD_DIR = "build_dir"
                 BUILD_DIR_X64 = "build_dir_x64"
+                VCPKG_BINARY_SOURCES  = 'clear;x-aws,s3://vcpkg-cache/archives/,readwrite'
+                AWS_ACCESS_KEY_ID     = credentials('s4_access_key_id_vcpkg_cache')
+                AWS_SECRET_ACCESS_KEY = credentials('s4_secret_access_key_vcpkg_cache')
+                AWS_ENDPOINT_URL      = "https://s3.g.s4.mega.io"
             }
             steps{
                 //Build SDK for arm64
                 sh "echo Building SDK for arm64"
                 sh "rm -rf ${BUILD_DIR}; mkdir ${BUILD_DIR}"
-                sh "cmake -DENABLE_CHAT=ON -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DVCPKG_ROOT=${VCPKGPATH} -DCMAKE_VERBOSE_MAKEFILE=ON -S ${WORKSPACE} -B ${WORKSPACE}/${BUILD_DIR}"
+                sh "cmake -DENABLE_CHAT=ON -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DVCPKG_ROOT=${VCPKGPATH} -DENABLE_MEDIA_FILE_METADATA=ON -DCMAKE_VERBOSE_MAKEFILE=ON -S ${WORKSPACE} -B ${WORKSPACE}/${BUILD_DIR}"
                 sh "cmake --build ${WORKSPACE}/${BUILD_DIR} -j1"
 
                 //Build SDK for x64
                 sh "echo \"Building SDK for x64 (crosscompiling)\""
                 sh "rm -rf ${BUILD_DIR_X64}; mkdir ${BUILD_DIR_X64}"
-                sh "cmake -DENABLE_CHAT=ON -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DVCPKG_ROOT=${VCPKGPATH} -DCMAKE_VERBOSE_MAKEFILE=ON -DCMAKE_OSX_ARCHITECTURES=x86_64 -S ${WORKSPACE} -B ${WORKSPACE}/${BUILD_DIR_X64}"
+                sh "cmake -DENABLE_CHAT=ON -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DVCPKG_ROOT=${VCPKGPATH} -DCMAKE_VERBOSE_MAKEFILE=ON -DENABLE_MEDIA_FILE_METADATA=ON -DCMAKE_OSX_ARCHITECTURES=x86_64 -S ${WORKSPACE} -B ${WORKSPACE}/${BUILD_DIR_X64}"
                 sh "cmake --build ${WORKSPACE}/${BUILD_DIR_X64} -j1"
             }
         }
@@ -67,12 +71,12 @@ pipeline {
                         if [ -z \"\$FAILED\" ]; then
                             if [ -z \"${TESTS_PARALLEL}\" ]; then
                                 # Sequential run
-                                ./tests/integration/test_integration --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} &
+                                ./tests/integration/test_integration --FREEACCOUNTS --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} &
                                 pid=\$!
                                 wait \$pid || FAILED=2
                             else
                                 # Parallel run
-                                ./tests/integration/test_integration --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} ${TESTS_PARALLEL} 2>&1 | tee tests.stdout
+                                ./tests/integration/test_integration --FREEACCOUNTS --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} ${TESTS_PARALLEL} 2>&1 | tee tests.stdout
                                 [ \"\${pipestatus[1]}\" != \"0\" ] && FAILED=2
                             fi
                         fi

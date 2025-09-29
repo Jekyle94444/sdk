@@ -26,6 +26,7 @@
 #include "gtest_common.h"
 #include "mega/scoped_helpers.h"
 #include "mega/syncinternals/syncuploadthrottlingmanager.h"
+#include "mega/testhooks.h"
 #include "mega/tlv.h"
 #include "mega/user_attribute.h"
 #include "test.h"
@@ -828,9 +829,13 @@ public:
             }
         }
 
-        // Have we matched all of the cache's content?
         if (processed.size() != mNodeMap.size())
+        {
+            LOG_verbose << "StateCacheValidator::compare: processed node list size("
+                        << processed.size() << ") does not match with mNodeMap size("
+                        << mNodeMap.size() << ")";
             return false;
+        }
 
         return true;
     }
@@ -921,9 +926,11 @@ private:
         assert(node.dbid || !node.parent);
         assert(node.parent || !node.dbid);
 
-        // Are the node's attributes consistent with cache?
         if (node.parent && !matchGeneral(node))
+        {
+            LOG_verbose << "matchDirectory: node's attributes are not consistent with cache";
             return false;
+        }
 
         // What children does this node have in the cache?
         auto* children = &empty;
@@ -944,14 +951,24 @@ private:
 
             // Is the child present in the cache?
             if (!children->count(child.dbid))
+            {
+                LOG_verbose << "matchDirectory: " << node.getLocalPath().toPath(false)
+                            << ", child not present in the cache("
+                            << child.getLocalPath().toPath(false) << ")";
                 return false;
+            }
 
             ++nChildren;
         }
 
         // Is the node's child count consistent with the cache?
         if (children->size() != nChildren)
+        {
+            LOG_verbose << "matchDirectory: " << node.getLocalPath().toPath(false)
+                        << ", children size (" << children->size()
+                        << ") does not match with nChildren value (" << nChildren << ")";
             return false;
+        }
 
         return true;
     }
@@ -966,6 +983,8 @@ private:
         if (!matchGeneral(node))
             return false;
 
+        const std::string nodeReportStr{"matchFile: " + node.getLocalPath().toPath(false) + ". "};
+
         // Convenience.
         auto& entry = *mNodeMap.at(node.dbid);
 
@@ -974,10 +993,18 @@ private:
         auto& rfp = entry.syncedFingerprint;
 
         if (lfp.isvalid != rfp.isvalid)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode lfp.isvalid (" << lfp.isvalid
+                        << ") does not match with rfp.isvalid value (" << rfp.isvalid << ")";
             return false;
+        }
 
         if (lfp.isvalid && lfp != rfp)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode lfp (" << lfp.isvalid
+                        << ") does not match with rfp value (" << rfp.isvalid << ")";
             return false;
+        }
 
         return true;
     }
@@ -987,35 +1014,73 @@ private:
     {
         assert(node.dbid);
         assert(node.parent);
+        std::string nodeReportStr{"matchGeneral: " < node.getLocalPath().toPath(false) + ". "};
 
         // Is the node in the cache?
         if (!mNodeMap.count(node.dbid))
+        {
+            LOG_verbose << nodeReportStr + "Node is not in cache";
             return false;
+        }
 
         // Convenience.
         auto& entry = *mNodeMap.at(node.dbid);
 
         // Compare serialized attributes.
         if (node.type != entry.type)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode type (" << node.type
+                        << ") does not match with StateCacheNode value (" << entry.type << ")";
             return false;
+        }
 
         if (node.parent->dbid != entry.parentID)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode parentID (" << node.parent->dbid
+                        << ") does not match with StateCacheNode value (" << entry.parentID << ")";
             return false;
+        }
 
         if (node.fsid_lastSynced != entry.fsid_lastSynced)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode fsid_lastSynced (" << node.fsid_lastSynced
+                        << ") does not match with StateCacheNode value (" << entry.fsid_lastSynced
+                        << ")";
             return false;
+        }
 
         if (node.localname != entry.localname)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode localname (" << node.localname
+                        << ") does not match with StateCacheNode value (" << entry.localname << ")";
             return false;
+        }
 
         if (!node.slocalname != !entry.slocalname)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode !slocalname (" << !node.slocalname
+                        << ") does not match with StateCacheNode value (" << !entry.slocalname
+                        << ")";
             return false;
+        }
 
         if (node.slocalname && *node.slocalname != *entry.slocalname)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode slocalname (" << *node.slocalname
+                        << ") does not match with StateCacheNode value (" << *entry.slocalname
+                        << ")";
             return false;
+        }
 
         if (node.syncedCloudNodeHandle != entry.syncedCloudNodeHandle)
+        {
+            LOG_verbose << nodeReportStr << "LocalNode syncedCloudNodeHandle ("
+                        << Base64Str<MegaClient::NODEHANDLE>(node.syncedCloudNodeHandle.as8byte())
+                        << ") does not match with StateCacheNode value ("
+                        << Base64Str<MegaClient::NODEHANDLE>(entry.syncedCloudNodeHandle.as8byte())
+                        << ")";
             return false;
+        }
 
         return true;
     }
@@ -1952,6 +2017,36 @@ void StandardClient::request_response_progress(m_off_t a, m_off_t b)
     out() << clientname << " request_response_progress: " << a << " " << b;
 }
 
+void StandardClient::updateClientDowaitDs(const dstime lastClientDoWait)
+{
+    if (lastClientDoWait <= 0)
+        return;
+    lock_guard<mutex> guard(om);
+    mClientDowaitDs += lastClientDoWait;
+}
+
+dstime StandardClient::consumeClientDowaitDs(const dstime timeGranularity)
+{
+    if (timeGranularity <= 0)
+    {
+        LOG_err << "[StandardClient::consumeClientDowaitDs] timeGranularity (" << timeGranularity
+                << ") should be above 0";
+        assert(false &&
+               "[StandardClient::consumeClientDowaitDs] timeGranularity should be above 0");
+        return 0;
+    }
+    lock_guard<mutex> guard(om);
+    const auto clientDowaitDsToReturn = mClientDowaitDs / timeGranularity;
+    mClientDowaitDs -= clientDowaitDsToReturn;
+    return clientDowaitDsToReturn;
+}
+
+void StandardClient::resetClientDowaitDs()
+{
+    lock_guard<mutex> guard(om);
+    mClientDowaitDs = 0;
+}
+
 void StandardClient::threadloop()
     try
 {
@@ -1986,7 +2081,10 @@ void StandardClient::threadloop()
 
         client.waiter->bumpds();
         dstime t3 = client.waiter->ds.load();
-        if (t3 - t2 > 20) LOG_debug << "dowait took ds: " << t3 - t2;
+        const auto doWaitTimeDs = t3 - t2;
+        updateClientDowaitDs(doWaitTimeDs);
+        if (doWaitTimeDs >= 10)
+            LOG_debug << "dowait took ds: " << doWaitTimeDs;
 
         std::lock_guard<std::recursive_mutex> lg(clientMutex);
 
@@ -2718,39 +2816,53 @@ unsigned StandardClient::deleteTestBaseFolder(bool mayNeedDeleting)
     return result.get();
 }
 
-void StandardClient::deleteTestBaseFolder(bool mayNeedDeleting, bool deleted, PromiseUnsignedSP result)
+void StandardClient::deleteTestBaseFolder(bool mayNeedDeleting,
+                                          bool deleted,
+                                          PromiseUnsignedSP result)
 {
-    if (std::shared_ptr<Node> root = client.nodeByHandle(client.mNodeManager.getRootNodeFiles()))
+    std::shared_ptr<Node> root = client.nodeByHandle(client.mNodeManager.getRootNodeFiles());
+    if (!root)
     {
-        std::shared_ptr<Node> basenode = client.childnodebyname(root.get(), "mega_test_sync", false);
-        if (basenode && !basenode->changed.removed) // ensure it isn't already marked as removed
-        {
-            if (mayNeedDeleting)
-            {
-                auto completion = [this, result](NodeHandle, Error e) {
-                    EXPECT_EQ(e, API_OK);
-                    if (e) out() << "delete of test base folder reply reports: " << e;
-                    deleteTestBaseFolder(false, true, result);
-                };
-
-                resultproc.prepresult(COMPLETION, ++next_request_tag,
-                    [=](){ client.unlink(basenode.get(), false, 0, false, std::move(completion)); },
-                    nullptr);
-                return;
-            }
-            out() << "base folder found, but not expected, failing";
-            result->set_value(0);
-            return;
-        }
-        else
-        {
-            //out() << "base folder not found, wasn't present or delete successful";
-            result->set_value(deleted ? 2 : 1);
-            return;
-        }
+        out() << "err: deleteTestBaseFolder. base folder not found, as root was not found!";
+        result->set_value(0);
+        return;
     }
-    out() << "base folder not found, as root was not found!";
-    result->set_value(0);
+
+    if (std::shared_ptr<Node> basenode =
+            client.childnodebyname(root.get(), "mega_test_sync", false);
+        basenode && !basenode->changed.removed) // ensure it isn't already marked as removed
+    {
+        if (mayNeedDeleting)
+        {
+            auto completion = [this, result](NodeHandle, Error e)
+            {
+                EXPECT_EQ(e, API_OK);
+                if (e)
+                    out()
+                        << "debug: deleteTestBaseFolder. delete of test base folder reply reports: "
+                        << e;
+                deleteTestBaseFolder(false /*mayNeedDeleting*/, true /*deleted*/, result);
+            };
+
+            resultproc.prepresult(
+                COMPLETION,
+                ++next_request_tag,
+                [=]()
+                {
+                    client.unlink(basenode.get(), false, 0, false, std::move(completion));
+                },
+                nullptr);
+            return;
+        }
+
+        out() << "err: deleteTestBaseFolder. base folder found, but not expected, failing";
+        result->set_value(0);
+        return;
+    }
+
+    out() << "debug: deleteTestBaseFolder. base folder not found, wasn't present or delete "
+             "successful";
+    result->set_value(deleted ? 2 : 1);
 }
 
 void StandardClient::ensureTestBaseFolder(bool mayneedmaking, PromiseBoolSP pb)
@@ -4859,6 +4971,7 @@ bool StandardClient::waitFor(std::function<bool(StandardClient&)> predicate,
                              std::chrono::seconds timeout,
                              std::chrono::milliseconds sleepIncrement)
 {
+    resetClientDowaitDs();
     auto total = std::chrono::milliseconds(0);
 
     out() << "Waiting for predicate to match...";
@@ -4870,6 +4983,13 @@ bool StandardClient::waitFor(std::function<bool(StandardClient&)> predicate,
             out() << "Predicate has matched!";
 
             return true;
+        }
+
+        if (const auto clientDowaitSecs = consumeClientDowaitDs(10);
+            clientDowaitSecs > 0 && timeout < std::chrono::seconds(300))
+        {
+            LOG_debug << "Adding " << clientDowaitSecs << " secs to timeout";
+            timeout += std::chrono::seconds(clientDowaitSecs);
         }
 
         if (total >= timeout)
@@ -5095,6 +5215,24 @@ void StandardClient::createHardLink(const fs::path& src,
     sourcePath = LocalPath::fromAbsolutePath(src.u8string());
     targetPath = LocalPath::fromAbsolutePath(dst.u8string());
     ASSERT_TRUE(fsAccess->hardLink(sourcePath, targetPath));
+}
+
+void StandardClient::unlinklocal(const LocalPath& localPath)
+{
+    bool nonTransientErrorFound{false};
+    const auto result = waitFor(
+        [&](StandardClient& sc)
+        {
+            if (!sc.client.fsaccess->unlinklocal(localPath))
+            {
+                nonTransientErrorFound = !sc.client.fsaccess->transient_error;
+                return nonTransientErrorFound;
+            }
+
+            return true;
+        },
+        DEFAULTWAIT);
+    ASSERT_TRUE(result && !nonTransientErrorFound);
 }
 
 void StandardClient::checkStallIssues(const handle /*backupId*/,
@@ -5639,10 +5777,18 @@ bool noSyncStalled(vector<SyncWaitResult>& v)
     return true;
 }
 
-vector<SyncWaitResult> waitonsyncs(std::function<bool(int64_t millisecNoActivity, int64_t millisecNoSyncing)> endCondition, StandardClient* c1 = nullptr, StandardClient* c2 = nullptr, StandardClient* c3 = nullptr, StandardClient* c4 = nullptr)
+using WaitOnSyncsEndCondition =
+    std::function<bool(const std::chrono::milliseconds noActivityTime,
+                       const std::chrono::milliseconds noSyncingTime,
+                       const std::chrono::seconds noActivityExtraTimeForTimeout)>;
+
+vector<SyncWaitResult> waitonsyncs(WaitOnSyncsEndCondition&& endCondition,
+                                   StandardClient* c1 = nullptr,
+                                   StandardClient* c2 = nullptr,
+                                   StandardClient* c3 = nullptr,
+                                   StandardClient* c4 = nullptr)
 {
-
-
+    LOG_debug << "waitonsyncs starts";
     auto totalTimeoutStart = chrono::steady_clock::now();
     auto startNoActivity = chrono::steady_clock::now();
     auto startNoSyncing = chrono::steady_clock::now();
@@ -5653,54 +5799,59 @@ vector<SyncWaitResult> waitonsyncs(std::function<bool(int64_t millisecNoActivity
     vector<StandardClient*> v{ c1, c2, c3, c4 };
     vector<SyncWaitResult> result{SyncWaitResult(), SyncWaitResult(), SyncWaitResult(), SyncWaitResult()};
 
+    for (auto sClient: v)
+    {
+        if (sClient)
+            sClient->resetClientDowaitDs();
+    }
+
     for (;;)
     {
         bool any_activity = false;
         bool any_still_syncing = false;
         bool any_running_at_all = false;
         bool any_stalled = false;
+        bool any_stalled_with_pending_reqs_or_scanning = false;
 
-        for (size_t i = v.size(); i--; ) if (v[i])
+        for (const auto i: range(v.size()))
         {
-            v[i]->thread_do<bool>([&](StandardClient& mc, PromiseBoolSP pb)
-                {
-                    result[i].syncStalled = mc.syncStallDetected(result[i].stall);
+            if (!v[i])
+                continue;
 
-                    if (result[i].syncStalled)
+            v[i]->thread_do<bool>(
+                    [&](StandardClient& mc, PromiseBoolSP pb)
                     {
-                        any_stalled = true;
-                        if (!stallStarted)
-                        {
-                            stallStarted = true;
-                            startStalled = chrono::steady_clock::now();
-                        }
-                    }
-                    else
-                    {
-                        any_running_at_all |= mc.client.syncs.mNumSyncsActive > 0;
+                        const auto anyTransfersOrCmds =
+                            !mc.client.transferlist.transfers[GET].empty() ||
+                            !mc.client.transferlist.transfers[PUT].empty() ||
+                            mc.client.reqs.cmdsInflight() ||
+                            mc.client.syncs.anySyncHasPendingTransfersThreadSafeState();
 
-                        if (mc.client.syncs.syncBusyState)
+                        if (result[i].syncStalled = mc.syncStallDetected(result[i].stall) ||
+                                                    mc.client.syncs.syncConflictState;
+                            result[i].syncStalled)
                         {
-                            any_activity = true;
+                            any_stalled = true;
+                            any_stalled_with_pending_reqs_or_scanning |=
+                                (anyTransfersOrCmds || mc.client.syncs.syncscanstate);
+                            if (!stallStarted)
+                            {
+                                stallStarted = true;
+                                startStalled = chrono::steady_clock::now();
+                            }
+                        }
+                        else
+                        {
+                            any_running_at_all |= mc.client.syncs.mNumSyncsActive > 0;
+                            any_activity |= (anyTransfersOrCmds || mc.client.syncs.syncBusyState);
+                            any_still_syncing |= mc.client.syncs.syncBusyState;
                         }
 
-                        if (!(mc.client.transferlist.transfers[GET].empty() && mc.client.transferlist.transfers[PUT].empty()))
-                        {
-                            any_activity = true;
-                        }
-                        if (mc.client.syncs.syncBusyState)
-                        {
-                            any_still_syncing = true;
-                        }
-                        if (mc.client.reqs.cmdsInflight())
-                        {
-                            // helps with waiting for 500s to pass
-                            any_activity = true;
-                        }
-                    }
-
-                    pb->set_value(true);
-                }, __FILE__, __LINE__).get();
+                        pb->set_value(true);
+                    },
+                    __FILE__,
+                    __LINE__)
+                .get();
         }
 
         if (!any_stalled)
@@ -5710,17 +5861,23 @@ vector<SyncWaitResult> waitonsyncs(std::function<bool(int64_t millisecNoActivity
 
         if (!any_running_at_all)
         {
-            bool stallexit = stallStarted && chrono::steady_clock::now() - startStalled > std::chrono::milliseconds(2000);
+            const auto millisecsToWait = any_stalled_with_pending_reqs_or_scanning ?
+                                             std::chrono::milliseconds(20000) :
+                                             std::chrono::milliseconds(3500);
+            const auto stallexit =
+                stallStarted && chrono::steady_clock::now() - startStalled > millisecsToWait;
             if (stallexit)
             {
                 // don't drop out of the wait if we are only stalled briefly.
                 // we've seen this happen if a .megaignore is not read properly -
                 // size is known, but read operations returns too few bytes, without error (in RenameReplaceIgnoreFile, on windows)
-                LOG_debug << " waitonsyncs detected syncs stalled for two seconds";
+                LOG_debug << " waitonsyncs detected syncs stalled for " << millisecsToWait.count()
+                          << " ms";
             }
             if (!stallStarted || stallexit)
             {
-                LOG_debug << " waitonsyncs finished since no non-stalled clients have any running syncs";
+                LOG_debug
+                    << " waitonsyncs finished since no non-stalled clients have any running syncs";
                 return result;
             }
         }
@@ -5734,6 +5891,7 @@ vector<SyncWaitResult> waitonsyncs(std::function<bool(int64_t millisecNoActivity
             startNoSyncing = chrono::steady_clock::now();
         }
 
+        auto noActivityExtraTimeForTimeout = std::chrono::seconds(0);
         auto minNoActivityTime = std::chrono::milliseconds(6 * 60 * 1000);
         auto minNoSyncingTime = std::chrono::milliseconds(6 * 60 * 1000);
         for (auto vn : v) if (vn)
@@ -5745,8 +5903,10 @@ vector<SyncWaitResult> waitonsyncs(std::function<bool(int64_t millisecNoActivity
 
             auto t3 = chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - startNoSyncing);
             if (t3 < minNoSyncingTime) minNoSyncingTime = t3;
+
+            noActivityExtraTimeForTimeout += std::chrono::seconds(vn->consumeClientDowaitDs(10));
         }
-        if (endCondition(minNoActivityTime.count(), minNoSyncingTime.count()))
+        if (endCondition(minNoActivityTime, minNoSyncingTime, noActivityExtraTimeForTimeout))
         {
             return result;
         }
@@ -5755,28 +5915,85 @@ vector<SyncWaitResult> waitonsyncs(std::function<bool(int64_t millisecNoActivity
 
         if ((chrono::steady_clock::now() - totalTimeoutStart) > std::chrono::minutes(5))
         {
-            out() << "Waiting for syncing to stop timed out at 5 minutes";
+            out() << "waitonsyncs waiting for syncing to stop timed out at 5 minutes";
             return result;
         }
     }
 }
 
-vector<SyncWaitResult> waitonsyncs(chrono::seconds d = std::chrono::seconds(4), StandardClient* c1 = nullptr, StandardClient* c2 = nullptr, StandardClient* c3 = nullptr, StandardClient* c4 = nullptr)
+void printStallIssues(StandardClient& sc)
 {
-    auto endCondition = [d](int64_t millisecNoActivity, int64_t millisecNoSyncing)
+    SyncStallInfoTests stalls;
+    sc.stallsDetected(stalls);
+    auto printStallIssue = [](const bool local, const std::string& pathstr, SyncStallEntry& stall)
     {
-        auto n = std::chrono::duration_cast<chrono::milliseconds>(d).count();
-        bool result = millisecNoActivity > n &&  millisecNoSyncing > n;
+        LOG_debug << "[Stall issue - " << (local ? "waitingForLocal" : "waitingForCloud")
+                  << "]: " << pathstr << "\n\t\t- Reason (" << static_cast<unsigned>(stall.reason)
+                  << ")"
+                  << "\n\t\t- cloudPath1 (" << stall.cloudPath1.debugReport() << ")"
+                  << "\n\t\t- cloudPath2 (" << stall.cloudPath2.debugReport() << ")"
+                  << "\n\t\t- localPath1 (" << stall.localPath1.debugReport() << ")"
+                  << "\n\t\t- localPath2 (" << stall.localPath2.debugReport() << ")";
+    };
+
+    LOG_debug << "Printing cloud stall issues:";
+    std::for_each(stalls.cloud.begin(),
+                  stalls.cloud.end(),
+                  [&printStallIssue](auto& s)
+                  {
+                      printStallIssue(true, s.first, s.second);
+                  });
+
+    LOG_debug << "Printing local stall issues:";
+    std::for_each(stalls.local.begin(),
+                  stalls.local.end(),
+                  [&printStallIssue](auto& s)
+                  {
+                      printStallIssue(true, s.first.toPath(false), s.second);
+                  });
+}
+
+vector<SyncWaitResult> waitonsyncs(const std::chrono::seconds timeout = std::chrono::seconds(4),
+                                   StandardClient* c1 = nullptr,
+                                   StandardClient* c2 = nullptr,
+                                   StandardClient* c3 = nullptr,
+                                   StandardClient* c4 = nullptr)
+{
+    auto endCondition = [&timeout](const std::chrono::milliseconds noActivityTime,
+                                   const std::chrono::milliseconds noSyncingTime,
+                                   const std::chrono::seconds noActivityExtraTimeForTimeout)
+    {
+        const auto noActivityTimeout =
+            std::min<std::chrono::seconds>(timeout + noActivityExtraTimeForTimeout,
+                                           std::chrono::minutes(4));
+        const auto result = noActivityTime >= noActivityTimeout && noSyncingTime >= timeout;
         if (result)
         {
-            LOG_debug << "waitonsyncs complete after " << millisecNoActivity << " ms of no activity and " << millisecNoSyncing << " ms of no syncing";
+            LOG_debug << "waitonsyncs complete after " << noActivityTime.count()
+                      << " ms of no activity and " << noSyncingTime.count()
+                      << " ms of no syncing [timeout = " << timeout.count()
+                      << " secs, noActivityExtraTimeForTimeout = "
+                      << noActivityExtraTimeForTimeout.count() << " secs]";
         }
         return result;
     };
 
-    return waitonsyncs(endCondition, c1, c2, c3, c4);
+    return waitonsyncs(std::move(endCondition), c1, c2, c3, c4);
 }
 
+bool StandardClient::waitForSyncTotalStallsStateUpdateTrue(const std::chrono::seconds timeout)
+{
+    if (const auto totalStallsStateUpdateResult =
+            waitFor(SyncTotalStallsStateUpdate(true), timeout);
+        !totalStallsStateUpdateResult)
+    {
+        LOG_warn << "SyncTotalStallsStateUpdate(true) was false, it could be due to a change of "
+                    "stall state that was temporary false due to pending scans, and then set to "
+                    "true again when there only was 1 stall. Checking we are in stall state...";
+        return mStallDetected;
+    }
+    return true;
+}
 
 mutex StandardClient::om;
 bool StandardClient::debugging = false;
@@ -5870,7 +6087,11 @@ bool createSpecialFiles(fs::path targetfolder, const string& prefix, int n = 1)
         fs::path fp = p / fs::u8path(filename);
 
         int fdtmp = openat(AT_FDCWD, p.c_str(), O_RDWR|O_CLOEXEC|O_TMPFILE, 0600);
-        write(fdtmp, filename.data(), filename.size());
+        if (const auto wrBytes = write(fdtmp, filename.data(), filename.size()); wrBytes < 0)
+        {
+            cerr << " Error writing file " << filename;
+            return false;
+        }
 
         stringstream fdproc;
         fdproc << "/proc/self/fd/";
@@ -5919,7 +6140,7 @@ public:
     {
         SdkTestBase::SetUp();
 
-        SimpleLogger::setLogLevel(logMax);
+        SimpleLogger::setLogLevel(logVerbose);
 
         ASSERT_TRUE(client0->login_reset_makeremotenodes("MEGA_EMAIL", "MEGA_PWD", "d", 1, 2));
         ASSERT_TRUE(client1->login_fetchnodes("MEGA_EMAIL", "MEGA_PWD"));
@@ -6142,7 +6363,7 @@ public:
 
         LOG_info << "____TEST SetUp: " << ::testing::UnitTest::GetInstance()->current_test_info()->name();
 
-        SimpleLogger::setLogLevel(logMax);
+        SimpleLogger::setLogLevel(logVerbose);
     }
 
     // Tears down the test case.
@@ -6605,6 +6826,130 @@ TEST_F(SyncTest, BasicSync_RenameLocalFile)
     ASSERT_TRUE(client0->confirmModel_mainthread(model1.findnode("x"), backupId0));
     ASSERT_TRUE(client1->confirmModel_mainthread(model2.findnode("x"), backupId1, true));
 }
+
+#ifdef MEGASDK_DEBUG_TEST_HOOKS_ENABLED
+TEST_F(SyncTest, TransferCountProgress)
+{
+    const std::string logPre = "SyncTest.TransferCountProgress: ";
+    LOG_debug << logPre + "#### Test preparation ####";
+    auto clientA1 = g_clientManager->getCleanStandardClient(0, makeNewTestRoot());
+    clientA1->logcb = true;
+    ASSERT_TRUE(clientA1->resetBaseFolderMulticlient());
+    ASSERT_TRUE(clientA1->makeCloudSubdirs("sync1", 0, 0));
+    ASSERT_TRUE(CatchupClients(clientA1));
+
+    std::atomic<bool> transferReportFlag{false};
+    std::atomic<bool> transferReportProgressFlag{false};
+    m_off_t transferReportInflightProgress{0};
+    m_off_t transferReportPendingBytes{0};
+    double transferReportProgress{0};
+    double targetProgressAux{0};
+    unsigned transferFinished{0};
+    unsigned targetTransferFinishedCount{3};
+
+    globalMegaTestHooks.onTransferReportProgress =
+        [&](const double p, const m_off_t fp, const m_off_t pb)
+    {
+        transferReportProgress = p;
+        transferReportInflightProgress = fp;
+        transferReportPendingBytes = pb;
+        transferReportProgressFlag = true;
+    };
+
+    clientA1->onTransferCompleted = [&](Transfer*)
+    {
+        if (++transferFinished == targetTransferFinishedCount)
+        {
+            clientA1->onTransferCompleted = nullptr;
+            targetProgressAux = transferReportProgress;
+            transferReportProgressFlag = false;
+            transferReportFlag = true;
+        }
+    };
+
+    LOG_debug << logPre + "#### Add and start sync ####";
+    const auto backupId1 = clientA1->setupSync_mainthread("sync1", "sync1", false, false);
+    ASSERT_NE(backupId1, UNDEF) << "Cannot add sync";
+    const auto SYNCROOT = clientA1->syncSet(backupId1).localpath;
+
+    LOG_debug << logPre + "#### Build model. ####";
+    Model model1;
+    model1.addfolder("A");
+    model1.generate(SYNCROOT);
+    clientA1->triggerPeriodicScanEarly(backupId1);
+    constexpr auto TIMEOUT = chrono::seconds(30);
+    waitonsyncs(TIMEOUT, clientA1);
+
+    LOG_debug << logPre + "#### Set max upload speed to 100Kb/s ####";
+    clientA1->client.setmaxuploadspeed(100000);
+
+    LOG_debug << logPre + "#### Add some files in local FS. ####";
+    constexpr size_t KB_IN_BYTES{104857u};
+    constexpr size_t MB_IN_BYTES{1048576u};
+    unsigned totalFilesAdded{0};
+    auto addFile = [SYNCROOT, &totalFilesAdded](Model& model, const string& path, const size_t s)
+    {
+        auto data = randomData(s);
+        model.addfile(path, data);
+        ASSERT_TRUE(createFile(SYNCROOT / path, data));
+        totalFilesAdded++;
+    };
+    addFile(model1, "A/fxya1", KB_IN_BYTES);
+    addFile(model1, "A/fxya2", KB_IN_BYTES);
+    addFile(model1, "A/fxya3", KB_IN_BYTES);
+    addFile(model1, "A/fxya4", MB_IN_BYTES);
+    addFile(model1, "A/fxya5", MB_IN_BYTES);
+    addFile(model1, "A/fxya6", MB_IN_BYTES);
+
+    auto checkTransferProgress = [&]()
+    {
+        LOG_debug << logPre + "#### Wait until first " << targetTransferFinishedCount
+                  << " transfers finish ####";
+        clientA1->waitFor(
+            [&transferReportFlag](StandardClient&)
+            {
+                return transferReportFlag.load();
+            },
+            std::chrono::seconds(30));
+        ASSERT_EQ(transferFinished, targetTransferFinishedCount);
+        auto numPendingTransfers = totalFilesAdded - transferFinished;
+
+        LOG_debug << logPre + "#### Wait until next reportCounts progress is received ####";
+        clientA1->waitFor(
+            [&transferReportProgressFlag](StandardClient&)
+            {
+                return transferReportProgressFlag.load();
+            },
+            std::chrono::seconds(6));
+        const auto initialPending = static_cast<m_off_t>(MB_IN_BYTES * numPendingTransfers);
+        ASSERT_GE(initialPending, transferReportPendingBytes);
+
+        const auto initialCompleted = static_cast<m_off_t>(KB_IN_BYTES * transferFinished);
+        const auto newCompleted = initialPending - transferReportPendingBytes;
+        const auto completed = initialCompleted + newCompleted;
+
+        const auto pending = initialPending - newCompleted;
+        ASSERT_EQ(pending, transferReportPendingBytes);
+        ASSERT_EQ((completed + pending), (initialPending + initialCompleted));
+
+        const auto currentProgress =
+            static_cast<double>(completed + transferReportInflightProgress) /
+            static_cast<double>(completed + pending);
+        ASSERT_EQ(transferReportProgress, currentProgress)
+            << ". Unexpected value for reportCounts progress";
+
+        LOG_debug << logPre + "#### Set max upload speed unlimited ####";
+        clientA1->client.setmaxuploadspeed(-1);
+    };
+    checkTransferProgress();
+
+    LOG_debug << logPre + "#### Wait on sync. ####";
+    waitonsyncs(TIMEOUT, clientA1);
+
+    LOG_debug << logPre + "#### Confirm model. ####";
+    ASSERT_TRUE(clientA1->confirmModel_mainthread(model1.findnode("" /*root*/), backupId1));
+}
+#endif
 
 TEST_F(SyncTest, BasicSync_AddLocalFolder)
 {
@@ -8535,7 +8880,7 @@ TEST_F(SyncTest, DetectsAndReportsSyncProblems)
     client->createHardLink(root / ldir4 / "n0", root / ldir4 / "e" / "n5", sPath2, tPath2);
 
     waitonsyncs(TIMEOUT, client);
-    ASSERT_TRUE(client->waitFor(SyncTotalStallsStateUpdate(true), TIMEOUT));
+    ASSERT_TRUE(client->waitForSyncTotalStallsStateUpdateTrue(TIMEOUT));
     ASSERT_NO_FATAL_FAILURE(client->checkStallIssues(backupId4, 2u, sPath2, tPath2));
 }
 #endif
@@ -11999,7 +12344,7 @@ TEST_F(SyncTest, MirroringInternalBackupResumesInMirroringMode)
     string sessionID;
 
     // Sync Backup ID.
-    handle id;
+    handle id{UNDEF};
 
     // Sync Root Handle.
     NodeHandle rootHandle;
@@ -12041,15 +12386,24 @@ TEST_F(SyncTest, MirroringInternalBackupResumesInMirroringMode)
         m.generate(cb.fsBasePath / "s");
 
         // Disable the sync when it starts uploading a file.
-        cb.mOnFileAdded = [&cb, &id](File&)
+        cb.mOnFileAdded = [&cb, &id, &TIMEOUT](File&)
         {
             // the upload has been set super slow so there's loads of time.
 
             // get the single sync
             SyncConfig config;
-            ASSERT_TRUE(cb.client.syncs.syncConfigByBackupId(id, config))
+
+            const auto getBackupResult = cb.waitFor(
+                [&id, &config](StandardClient& backupClient)
+                {
+                    return id != UNDEF &&
+                           backupClient.client.syncs.syncConfigByBackupId(id, config);
+                },
+                TIMEOUT);
+
+            ASSERT_TRUE(getBackupResult)
                 << "BackupId: " << id
-                << ". SyncVec is empty: " << (cb.client.syncs.mNumSyncsActive > 0);
+                << ". SyncVec is empty: " << (cb.client.syncs.mNumSyncsActive == 0);
 
             // Make sure the sync's in mirroring mode.
             ASSERT_EQ(config.mBackupId, id);
@@ -12892,7 +13246,7 @@ TEST_F(FilterFixture, FilterChangeWhileUploading)
     RemoteNodeModel remoteTree;
 
     // Set up local FS.
-    localFS.addfile("f");
+    localFS.addfile("f", data);
     localFS.generate(root(*cdu) / "root");
     localFS.addfile(".megaignore", ignoreFile);
 
@@ -17154,7 +17508,6 @@ TEST_F(SyncTest, StallsWhenEncounteringHardLink)
     ASSERT_TRUE(client->confirmModel_mainthread(model.root.get(), id));
 
     // Create a hard link to f0.
-    auto fsAccess = client->client.fsaccess.get();
     LocalPath sourcePath;
     LocalPath targetPath;
 
@@ -17162,10 +17515,7 @@ TEST_F(SyncTest, StallsWhenEncounteringHardLink)
         auto source = client->fsBasePath / "s" / "f0";
         auto target = client->fsBasePath / "s" / "f2";
 
-        sourcePath = LocalPath::fromAbsolutePath(source.u8string());
-        targetPath = LocalPath::fromAbsolutePath(target.u8string());
-
-        ASSERT_TRUE(fsAccess->hardLink(sourcePath, targetPath));
+        ASSERT_NO_FATAL_FAILURE(client->createHardLink(source, target, sourcePath, targetPath));
     }
 
     // Wait for the engine to process our changes.
@@ -17191,7 +17541,7 @@ TEST_F(SyncTest, StallsWhenEncounteringHardLink)
     ASSERT_EQ(sr.localPath2.problem, PathProblem::DetectedHardLink);
 
     // Check if we can resolve the stall by removing the hardlink.
-    ASSERT_TRUE(fsAccess->unlinklocal(targetPath));
+    ASSERT_NO_FATAL_FAILURE(client->unlinklocal(targetPath));
 
     // Wait for the stall to be resolved.
     ASSERT_TRUE(client->waitFor(SyncStallState(false), TIMEOUT));
@@ -17237,18 +17587,14 @@ TEST_F(SyncTest, MultipleStallsWhenEncounteringHardLink)
     ASSERT_TRUE(client->confirmModel_mainthread(model.root.get(), id));
 
     // Create a hard link to f0.
-    auto fsAccess = client->client.fsaccess.get();
     LocalPath sourcePath;
     LocalPath targetPath;
 
     {
-        auto source = client->fsBasePath / "s" / "f0";
-        auto target = client->fsBasePath / "s" / "d1" / "f5";
+        const auto source = client->fsBasePath / "s" / "f0";
+        const auto target = client->fsBasePath / "s" / "d1" / "f5";
 
-        sourcePath = LocalPath::fromAbsolutePath(source.u8string());
-        targetPath = LocalPath::fromAbsolutePath(target.u8string());
-
-        ASSERT_TRUE(fsAccess->hardLink(sourcePath, targetPath));
+        ASSERT_NO_FATAL_FAILURE(client->createHardLink(source, target, sourcePath, targetPath));
     }
 
     // Wait for the engine to process our changes.
@@ -17274,7 +17620,6 @@ TEST_F(SyncTest, MultipleStallsWhenEncounteringHardLink)
     ASSERT_EQ(sr.localPath2.problem, PathProblem::DetectedHardLink);
 
     // Create another hard link to f1.
-    auto fsAccess2 = client->client.fsaccess.get();
     LocalPath sourcePath2;
     LocalPath targetPath2;
 
@@ -17282,17 +17627,14 @@ TEST_F(SyncTest, MultipleStallsWhenEncounteringHardLink)
         auto source = client->fsBasePath / "s" / "d2" / "f3";
         auto target = client->fsBasePath / "s" / "d3" / "f6";
 
-        sourcePath2 = LocalPath::fromAbsolutePath(source.u8string());
-        targetPath2 = LocalPath::fromAbsolutePath(target.u8string());
-
-        ASSERT_TRUE(fsAccess2->hardLink(sourcePath2, targetPath2));
+        ASSERT_NO_FATAL_FAILURE(client->createHardLink(source, target, sourcePath2, targetPath2));
     }
 
     // Wait for the engine to process our changes.
     waitonsyncs(TIMEOUT, client);
 
     // Wait for the engine to detect a stall update
-    ASSERT_TRUE(client->waitFor(SyncTotalStallsStateUpdate(true), TIMEOUT));
+    ASSERT_TRUE(client->waitForSyncTotalStallsStateUpdateTrue(TIMEOUT));
 
     // Make sure the stalls collection is updated
     stalls.clear();
@@ -17323,13 +17665,13 @@ TEST_F(SyncTest, MultipleStallsWhenEncounteringHardLink)
     ASSERT_TRUE(client->waitFor(SyncTotalStallsStateUpdate(false), TIMEOUT));
 
     // Check if we can resolve the first stall by removing the hardlink.
-    ASSERT_TRUE(fsAccess->unlinklocal(targetPath));
+    ASSERT_NO_FATAL_FAILURE(client->unlinklocal(targetPath));
 
     // Wait for the engine to process our changes.
     waitonsyncs(TIMEOUT, client);
 
     // Wait for the stall state to be updated. We should still have one stall (updated as we had two stalls before).
-    ASSERT_TRUE(client->waitFor(SyncTotalStallsStateUpdate(true), TIMEOUT));
+    ASSERT_TRUE(client->waitForSyncTotalStallsStateUpdateTrue(TIMEOUT));
 
     // Make sure the stalls collection is updated
     stalls.clear();
@@ -17348,7 +17690,7 @@ TEST_F(SyncTest, MultipleStallsWhenEncounteringHardLink)
     ASSERT_EQ(sr4.localPath2.problem, PathProblem::DetectedHardLink);
 
     // Check if we can resolve the second stall by removing the hardlink.
-    ASSERT_TRUE(fsAccess->unlinklocal(targetPath2));
+    ASSERT_NO_FATAL_FAILURE(client->unlinklocal(targetPath2));
 
     // Wait for the engine to process our changes.
     waitonsyncs(TIMEOUT, client);
@@ -19295,7 +19637,11 @@ TEST_F(SyncTest, SyncUtf8DifferentlyNormalized1)
 
     // Wait for the synchronization to complete.
     auto waitResult = waitonsyncs(std::chrono::seconds(5), client);
-    ASSERT_TRUE(noSyncStalled(waitResult));
+    if (auto stallsDetected = !noSyncStalled(waitResult); stallsDetected)
+    {
+        printStallIssues(*client);
+        ASSERT_TRUE(!stallsDetected) << "stall issues detected";
+    }
 
     Model model;
     model.addfile(name1)->fsName(name2);

@@ -226,6 +226,7 @@ typedef enum ErrorCodes : int
     LOCAL_ENOSPC = -1000,           ///< Insufficient space
     LOCAL_ETIMEOUT = -1001,         ///< A request timed out.
     LOCAL_ABANDONED = -1002,        ///< Request abandoned due to local logout.
+    LOCAL_ENETWORK = -1003, ///< Local network error (DNS resolution failure)
 
     API_FUSE_EBADF = -2000,
     API_FUSE_EISDIR = -2001,
@@ -243,8 +244,23 @@ public:
     typedef enum
     {
         USER_ETD_UNKNOWN = -1,
-        USER_COPYRIGHT_SUSPENSION = 4,  // Account suspended by copyright
-        USER_ETD_SUSPENSION = 7, // represents an ETD/ToS 'severe' suspension level
+        USER_ENABLED = 0,
+        USER_PENDINGCONFIRMATION = 1,
+        USER_SUSPENDED_GENERIC = 2,
+        USER_SUSPENDED_PAYMENT = 3,
+        USER_COPYRIGHT_SUSPENSION = 4,
+        USER_SUSPENDED_ADMIN_FULLDISABLE = 5,
+        USER_SUSPENDED_ADMIN_PARTIALDISABLE = 6,
+        USER_ETD_SUSPENSION = 7,
+        USER_SUSPENDED_SMSVERIFICATIONREQUIRED = 8,
+        USER_SUSPENDED_EMAILVERIFICATIONREQUIRED = 9,
+        USER_SUBACCOUNT_PENDINGCONFIRMATION = 10,
+        USER_SUBACCOUNT_DISABLED = 11,
+        USER_SUBACCOUNT_DELETED = 12,
+        USER_BUSINESSACCOUNT = 20,
+        USER_SUSPENDED_PASSWORD_CHANGE_REQUIRED = 21,
+        USER_EPHEMERAL_RESELLER_USER = 22,
+        USER_SUSPENDED_NOUSER = 99,
     } UserErrorCode;
 
     typedef enum
@@ -294,6 +310,10 @@ enum class PasswordEntryError : uint8_t
     INVALID_TOTP_EXPT,
     MISSING_TOTP_HASH_ALG,
     INVALID_TOTP_HASH_ALG,
+    MISSING_CREDIT_CARD_NUMBER,
+    INVALID_CREDIT_CARD_NUMBER,
+    INVALID_CREDIT_CARD_CVV,
+    INVALID_CREDIT_CARD_EXPIRATION_DATE,
 };
 
 /**
@@ -465,7 +485,7 @@ public:
 
     virtual bool serialize(string*) const = 0;
 
-    uint32_t dbid = 0;
+    uint32_t dbid = 0; // exposed for active transfers via MegaTransfer::getUniqueId
     bool notified = false;
 };
 
@@ -802,10 +822,9 @@ typedef enum {
     STORAGE_GREEN = 0,      // there is storage is available
     STORAGE_ORANGE = 1,     // storage is almost full
     STORAGE_RED = 2,        // storage is full
-    STORAGE_CHANGE = 3,     // the status of the storage might have changed
+    // STORAGE_CHANGE = 3,     // obsolete (SDK fetches the state and notify directly)
     STORAGE_PAYWALL = 4,    // storage is full and user didn't remedy despite of warnings
 } storagestatus_t;
-
 
 enum SmsVerificationState {
     // These values (except unknown) are delivered from the servers
@@ -880,7 +899,24 @@ typedef enum {
     REASON_ERROR_DB_INDEX_OVERFLOW  = 4,
     REASON_ERROR_NO_JSCD = 5,
     REASON_ERROR_REGENERATE_JSCD = 6,
+    REASON_ERROR_DB_CORRUPT = 7,
+    REASON_ERROR_DB_UNKNOWN = 8,
 } ErrorReason;
+
+// enum matching 1:1 MegaEvent::NetworkActivityChannel
+enum NetworkActivityChannel : int
+{
+    SC,
+    CS,
+};
+
+// enum matching 1:1 MegaEvent::NetworkActivityType
+enum NetworkActivityType : int
+{
+    REQUEST_SENT,
+    REQUEST_RECEIVED,
+    REQUEST_ERROR,
+};
 
 //#define MEGA_MEASURE_CODE   // uncomment this to track time spent in major subsystems, and log it every 2 minutes, with extra control from megacli
 

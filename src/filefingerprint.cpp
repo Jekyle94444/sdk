@@ -70,6 +70,12 @@ bool FileFingerprint::EqualExceptValidFlag(const FileFingerprint& rhs) const
     return !memcmp(crc.data(), rhs.crc.data(), sizeof crc);
 }
 
+bool FileFingerprint::equalExceptMtime(const FileFingerprint& rhs) const
+{
+    return (memcmp(this->crc.data(), rhs.crc.data(), sizeof rhs.crc) == 0 &&
+            this->size == rhs.size);
+}
+
 bool FileFingerprint::serialize(string *d) const
 {
     d->append((const char*)&size, sizeof(size));
@@ -230,6 +236,8 @@ bool FileFingerprint::genfingerprint(FileAccess* fa, bool ignoremtime)
     }
 
     fa->closef();
+
+    LOG_debug << "[FileFingerprint::genfingerprint] FA debug fp: " << fingerprintDebugString();
     return changed;
 }
 
@@ -350,6 +358,7 @@ bool FileFingerprint::genfingerprint(InputStreamAccess *is, m_time_t cmtime, boo
         changed = true;
     }
 
+    LOG_debug << "[FileFingerprint::genfingerprint] IA debug fp: " << fingerprintDebugString();
     return changed;
 }
 

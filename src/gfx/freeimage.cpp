@@ -396,7 +396,8 @@ GfxProviderFreeImage::~GfxProviderFreeImage()
 #ifdef USE_MEDIAINFO
 bool GfxProviderFreeImage::readbitmapMediaInfo(const LocalPath& imagePath)
 {
-    const StringPair& cover = MediaProperties::getCoverFromId3v2(imagePath.localpath);
+    string_type imgPathStr = imagePath.asPlatformEncoded(false);
+    const StringPair& cover = MediaProperties::getCoverFromId3v2(imgPathStr);
     if (cover.first.empty())
     {
         return false;
@@ -440,9 +441,8 @@ bool GfxProviderFreeImage::readbitmapMediaInfo(const LocalPath& imagePath)
 
 bool GfxProviderFreeImage::readbitmapFreeimage(const LocalPath& imagePath, int size)
 {
-
     // FIXME: race condition, need to use open file instead of filename
-    FREE_IMAGE_FORMAT fif = FreeImage_GetFileTypeX(imagePath.localpath.c_str());
+    FREE_IMAGE_FORMAT fif = FreeImage_GetFileTypeX(imagePath.asPlatformEncoded(false).c_str());
 
     if (fif == FIF_UNKNOWN)
     {
@@ -464,7 +464,7 @@ bool GfxProviderFreeImage::readbitmapFreeimage(const LocalPath& imagePath, int s
     }();
 
     // Load
-    dib = FreeImage_LoadX(fif, imagePath.localpath.c_str(), flag);
+    dib = FreeImage_LoadX(fif, imagePath.asPlatformEncoded(false).c_str(), flag);
     if (!dib)
     {
         return false;
@@ -484,10 +484,12 @@ bool GfxProviderFreeImage::readbitmapFreeimage(const LocalPath& imagePath, int s
 
 #ifdef HAVE_FFMPEG
 
+#if LIBAVCODEC_VERSION_MAJOR < 60
 #ifdef AV_CODEC_CAP_TRUNCATED
 #define CAP_TRUNCATED AV_CODEC_CAP_TRUNCATED
 #else
 #define CAP_TRUNCATED CODEC_CAP_TRUNCATED
+#endif
 #endif
 
 const char *GfxProviderFreeImage::supportedformatsFfmpeg()
@@ -592,11 +594,12 @@ bool GfxProviderFreeImage::readbitmapFfmpeg(const LocalPath& imagePath, int /*si
 
     // Force seeking to key frames
     formatContext->seek2any = false;
+#if LIBAVCODEC_VERSION_MAJOR < 60
     if (decoder->capabilities & CAP_TRUNCATED)
     {
         codecContext->flags |= CAP_TRUNCATED;
     }
-
+#endif
     AVPixelFormat sourcePixelFormat = static_cast<AVPixelFormat>(codecParm->format);
     AVPixelFormat targetPixelFormat = AV_PIX_FMT_BGR24; //raw data expected by freeimage is in this format
     SwsContext* swsContext = sws_getContext(width, height, sourcePixelFormat,
@@ -673,9 +676,20 @@ bool GfxProviderFreeImage::readbitmapFfmpeg(const LocalPath& imagePath, int /*si
     // Compute the video's rotation.
     auto rotation = [&]()
     {
+        uint8_t* matrix = nullptr;
+#if LIBAVCODEC_VERSION_MAJOR < 60
         // Retrieve the video's display matrix.
-        auto* matrix = av_stream_get_side_data(videoStream, AV_PKT_DATA_DISPLAYMATRIX, nullptr);
-
+        matrix = av_stream_get_side_data(videoStream, AV_PKT_DATA_DISPLAYMATRIX, nullptr);
+#else
+        const AVPacketSideData* packet_side_data =
+            av_packet_side_data_get(videoStream->codecpar->coded_side_data,
+                                    videoStream->codecpar->nb_coded_side_data,
+                                    AV_PKT_DATA_DISPLAYMATRIX);
+        if (packet_side_data)
+        {
+            matrix = packet_side_data->data;
+        }
+#endif
         // No display matrix? No rotation.
         if (!matrix)
         {

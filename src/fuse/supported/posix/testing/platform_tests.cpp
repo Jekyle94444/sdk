@@ -6,8 +6,8 @@
 #include <map>
 #include <thread>
 
-#include <mega/fuse/common/error_or.h>
-#include <mega/fuse/common/node_info.h>
+#include <mega/common/error_or.h>
+#include <mega/common/node_info.h>
 #include <mega/fuse/common/testing/client.h>
 #include <mega/fuse/common/testing/cloud_path.h>
 #include <mega/fuse/common/testing/utility.h>
@@ -27,9 +27,9 @@ namespace fuse
 namespace testing
 {
 
-#ifndef O_PATH
+#ifndef HAS_OPEN_PATH
 #define O_PATH O_RDONLY
-#endif // !O_PATH
+#endif // !HAS_OPEN_PATH
 
 TEST_P(FUSEPlatformTests, access_at_fails_when_below_file)
 {

@@ -31,6 +31,7 @@ static const char* NodeSearchFilterPtrStr = "NodeSearchFilterPtrStr";
 SqliteDbAccess::SqliteDbAccess(const LocalPath& rootPath)
   : mRootPath(rootPath)
 {
+    LOG_debug << "sqlite version: " << sqlite3_libversion();
     assert(mRootPath.isAbsolute());
 }
 
@@ -297,11 +298,13 @@ std::optional<std::filesystem::path>
     SqliteDbAccess::getExistingDbPath(const FileSystemAccess& fsAccess,
                                       const std::string& fname) const
 {
-    auto expectedPath = databasePath(fsAccess, fname, DbAccess::DB_VERSION).rawValue();
+    auto expectedPath =
+        databasePath(fsAccess, fname, DbAccess::DB_VERSION).asPlatformEncoded(false);
     if (std::filesystem::exists(expectedPath))
         return expectedPath;
 
-    expectedPath = databasePath(fsAccess, fname, DbAccess::LEGACY_DB_VERSION).rawValue();
+    expectedPath =
+        databasePath(fsAccess, fname, DbAccess::LEGACY_DB_VERSION).asPlatformEncoded(false);
     if (std::filesystem::exists(expectedPath))
         return expectedPath;
     return {};
@@ -353,7 +356,9 @@ bool SqliteDbAccess::openDBAndCreateStatecache(sqlite3 **db, FileSystemAccess &f
     return true;
 }
 
-bool SqliteDbAccess::renameDBFiles(mega::FileSystemAccess& fsAccess, mega::LocalPath& legacyPath, mega::LocalPath& dbPath)
+bool SqliteDbAccess::renameDBFiles(FileSystemAccess& fsAccess,
+                                   const LocalPath& legacyPath,
+                                   const LocalPath& dbPath)
 {
     // Main DB file should exits
     if (!fsAccess.renamelocal(legacyPath, dbPath))
@@ -365,8 +370,10 @@ bool SqliteDbAccess::renameDBFiles(mega::FileSystemAccess& fsAccess, mega::Local
 
 #if !(TARGET_OS_IPHONE)
     auto suffix = LocalPath::fromRelativePath("-shm");
-    auto from = legacyPath + suffix;
-    auto to = dbPath + suffix;
+    auto from = legacyPath;
+    from.append(suffix);
+    auto to = dbPath;
+    to.append(suffix);
 
     // -shm could or couldn't be present
     if (fileAccess->fopen(from, FSLogging::logExceptFileNotFound) && !fsAccess.renamelocal(from, to))
@@ -377,8 +384,10 @@ bool SqliteDbAccess::renameDBFiles(mega::FileSystemAccess& fsAccess, mega::Local
     }
 
     suffix = LocalPath::fromRelativePath("-wal");
-    from = legacyPath + suffix;
-    to = dbPath + suffix;
+    from = legacyPath;
+    from.append(suffix);
+    to = dbPath;
+    to.append(suffix);
 
     // -wal could or couldn't be present
     if (fileAccess->fopen(from, FSLogging::logExceptFileNotFound) && !fsAccess.renamelocal(from, to))
@@ -390,8 +399,10 @@ bool SqliteDbAccess::renameDBFiles(mega::FileSystemAccess& fsAccess, mega::Local
 #else
     // iOS doesn't use WAL mode, but Journal
     auto suffix = LocalPath::fromRelativePath("-journal");
-    auto from = legacyPath + suffix;
-    auto to = dbPath + suffix;
+    auto from = legacyPath;
+    from.append(suffix);
+    auto to = dbPath;
+    to.append(suffix);
 
     // -journal could or couldn't be present
     if (fileAccess->fopen(from, FSLogging::logExceptFileNotFound) && !fsAccess.renamelocal(from, to))
@@ -411,17 +422,18 @@ void SqliteDbAccess::removeDBFiles(FileSystemAccess& fsAccess, mega::LocalPath& 
     fsAccess.unlinklocal(dbPath);
 
 #if !(TARGET_OS_IPHONE)
-    auto suffix = LocalPath::fromRelativePath("-shm");
-    auto fileToRemove = dbPath + suffix;
+    auto fileToRemove = dbPath;
+    fileToRemove.insertFilenameSuffix("-shm");
     fsAccess.unlinklocal(fileToRemove);
 
-    suffix = LocalPath::fromRelativePath("-wal");
-    fileToRemove = dbPath + suffix;
+    fileToRemove = dbPath;
+    fileToRemove.insertFilenameSuffix("-wal");
     fsAccess.unlinklocal(fileToRemove);
 #else
     // iOS doesn't use WAL mode, but Journal
     auto suffix = LocalPath::fromRelativePath("-journal");
-    auto fileToRemove = dbPath + suffix;
+    auto fileToRemove = dbPath;
+    fileToRemove.append(suffix);
     fsAccess.unlinklocal(fileToRemove);
 
 #endif
@@ -906,38 +918,105 @@ void SqliteDbTable::errorHandler(int sqliteError, const string& operation, bool 
     DBError dbError = DBError::DB_ERROR_UNKNOWN;
     switch (sqliteError)
     {
-    case SQLITE_OK:
-    case SQLITE_ROW:
-    case SQLITE_DONE:
-        return;
-
-    case SQLITE_INTERRUPT:
-        if (interrupt)
-        {
-            // SQLITE_INTERRUPT isn't handle as an error if caller can be interrupted
-            LOG_debug <<  operation << ": interrupted";
+        case SQLITE_OK:
+        case SQLITE_ROW:
+        case SQLITE_DONE:
             return;
-        }
-        break;
-
-    case SQLITE_FULL:
-        dbError = DBError::DB_ERROR_FULL;
-        break;
-
-    case SQLITE_IOERR:
-        dbError = DBError::DB_ERROR_IO;
-        break;
-
-    default:
-        dbError = DBError::DB_ERROR_UNKNOWN;
-        break;
+        case SQLITE_ERROR:
+            dbError = DBError::DB_ERROR;
+            break;
+        case SQLITE_INTERNAL:
+            dbError = DBError::DB_ERROR_INTERNAL;
+            break;
+        case SQLITE_PERM:
+            dbError = DBError::DB_ERROR_PERM;
+            break;
+        case SQLITE_ABORT:
+            dbError = DBError::DB_ERROR_ABORT;
+            break;
+        case SQLITE_BUSY:
+            dbError = DBError::DB_ERROR_BUSY;
+            break;
+        case SQLITE_LOCKED:
+            dbError = DBError::DB_ERROR_LOCKED;
+            break;
+        case SQLITE_NOMEM:
+            dbError = DBError::DB_ERROR_NOMEM;
+            break;
+        case SQLITE_READONLY:
+            dbError = DBError::DB_ERROR_READONLY;
+            break;
+        case SQLITE_INTERRUPT:
+            if (interrupt)
+            {
+                // SQLITE_INTERRUPT isn't handle as an error if caller can be interrupted
+                LOG_debug << operation << ": interrupted";
+                return;
+            }
+            dbError = DBError::DB_ERROR_INTERRUPT;
+            break;
+        case SQLITE_IOERR:
+            dbError = DBError::DB_ERROR_IO;
+            break;
+        case SQLITE_CORRUPT:
+            dbError = DBError::DB_ERROR_CORRUPT;
+            break;
+        case SQLITE_NOTFOUND:
+            dbError = DBError::DB_ERROR_NOTFOUND;
+            break;
+        case SQLITE_FULL:
+            dbError = DBError::DB_ERROR_FULL;
+            break;
+        case SQLITE_CANTOPEN:
+            dbError = DBError::DB_ERROR_CANTOPEN;
+            break;
+        case SQLITE_PROTOCOL:
+            dbError = DBError::DB_ERROR_PROTOCOL;
+            break;
+        case SQLITE_EMPTY:
+            dbError = DBError::DB_ERROR_EMPTY;
+            break;
+        case SQLITE_SCHEMA:
+            dbError = DBError::DB_ERROR_SCHEMA;
+            break;
+        case SQLITE_TOOBIG:
+            dbError = DBError::DB_ERROR_TOOBIG;
+            break;
+        case SQLITE_CONSTRAINT:
+            dbError = DBError::DB_ERROR_CONSTRAINT;
+            break;
+        case SQLITE_MISMATCH:
+            dbError = DBError::DB_ERROR_MISMATCH;
+            break;
+        case SQLITE_MISUSE:
+            dbError = DBError::DB_ERROR_MISUSE;
+            break;
+        case SQLITE_NOLFS:
+            dbError = DBError::DB_ERROR_NOLFS;
+            break;
+        case SQLITE_AUTH:
+            dbError = DBError::DB_ERROR_AUTH;
+            break;
+        case SQLITE_FORMAT:
+            dbError = DBError::DB_ERROR_FORMAT;
+            break;
+        case SQLITE_RANGE:
+            dbError = DBError::DB_ERROR_RANGE;
+            break;
+        case SQLITE_NOTADB:
+            dbError = DBError::DB_ERROR_NOTADB;
+            break;
+        default:
+            dbError = DBError::DB_ERROR_UNKNOWN;
+            break;
     }
 
-    string err = string(" Error: ") + (sqlite3_errmsg(db) ? sqlite3_errmsg(db) : std::to_string(sqliteError));
+    string err = string(" Error: ") +
+                 (sqlite3_errmsg(db) ? sqlite3_errmsg(db) : std::to_string(sqliteError));
     LOG_err << operation << ": " << dbfile << err;
     assert(!operation.c_str());
 
-    if (mDBErrorCallBack && dbError != DBError::DB_ERROR_UNKNOWN)
+    if (mDBErrorCallBack)
     {
         // Only notify DB errors related to disk-is-full and input/output failures
         mDBErrorCallBack(dbError);
@@ -1103,14 +1182,16 @@ void SqliteAccountState::updateCounterAndFlags(NodeHandle nodeHandle, uint64_t f
     sqlite3_reset(mStmtUpdateNodeAndFlags);
 }
 
-void SqliteAccountState::createIndexes()
+void SqliteAccountState::createIndexes(bool enableIndexesForSearching)
 {
     if (!db)
     {
         return;
     }
+
     // Create index for column that is not primary key (which already has an index by default)
-    std::string sql = "CREATE INDEX IF NOT EXISTS parenthandleindex on nodes (parenthandle)";
+    std::string sql =
+        "CREATE INDEX IF NOT EXISTS parenthandleindex on nodes (parenthandle, type, name)";
     int result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
     if (result)
     {
@@ -1133,26 +1214,73 @@ void SqliteAccountState::createIndexes()
     }
 #endif
 
-    sql = "CREATE INDEX IF NOT EXISTS shareindex on nodes (share)";
-    result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
-    if (result)
+    if (enableIndexesForSearching)
     {
-        LOG_err << "Data base error while creating index (shareindex): " << sqlite3_errmsg(db);
+        sql = "CREATE INDEX IF NOT EXISTS shareindex on nodes (share)";
+        result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+        if (result)
+        {
+            LOG_err << "Data base error while creating index (shareindex): " << sqlite3_errmsg(db);
+        }
+
+        sql = "CREATE INDEX IF NOT EXISTS favindex on nodes (fav)";
+        result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+        if (result)
+        {
+            LOG_err << "Data base error while creating index (favindex): " << sqlite3_errmsg(db);
+        }
+
+        sql = "CREATE INDEX IF NOT EXISTS ctimeindex on nodes (type, ctime DESC)";
+        result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+        if (result)
+        {
+            LOG_err << "Data base error while creating index (ctimeindex): " << sqlite3_errmsg(db);
+        }
+    }
+}
+
+void SqliteAccountState::dropSearchDBIndexes()
+{
+    if (!db)
+    {
+        return;
     }
 
-    sql = "CREATE INDEX IF NOT EXISTS favindex on nodes (fav)";
-    result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
-    if (result)
+    assert(!inTransaction());
+    // Finalise all statements
+    finalise();
+    begin();
+
+    const std::vector<std::string> indicesToDelete = {"shareindex", "favindex", "ctimeindex"};
+    for (const auto& indexName: indicesToDelete)
     {
-        LOG_err << "Data base error while creating index (favindex): " << sqlite3_errmsg(db);
+        sqlite3_stmt* stmt = nullptr;
+        const std::string query = "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?";
+
+        if (sqlite3_prepare_v2(db, query.c_str(), -1, &stmt, nullptr) == SQLITE_OK)
+        {
+            sqlite3_bind_text(stmt, 1, indexName.c_str(), -1, SQLITE_TRANSIENT);
+
+            if (sqlite3_step(stmt) == SQLITE_ROW)
+            {
+                sqlite3_finalize(stmt);
+                const std::string dropStmt = "DROP INDEX " + indexName + ";";
+                if (int sqlResult = sqlite3_exec(db, dropStmt.c_str(), nullptr, nullptr, nullptr);
+                    sqlResult != SQLITE_OK)
+                {
+                    errorHandler(sqlResult,
+                                 "Error while dropping index (" + indexName + ")",
+                                 false);
+                }
+            }
+            else
+            {
+                sqlite3_finalize(stmt);
+            }
+        }
     }
 
-    sql = "CREATE INDEX IF NOT EXISTS ctimeindex on nodes (ctime)";
-    result = sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
-    if (result)
-    {
-        LOG_err << "Data base error while creating index (ctimeindex): " << sqlite3_errmsg(db);
-    }
+    commit();
 }
 
 void SqliteAccountState::remove()
@@ -1463,7 +1591,20 @@ bool SqliteAccountState::getNodesWithSharesOrLink(std::vector<std::pair<NodeHand
 
     sqlite3_stmt *stmt = nullptr;
     bool result = false;
-    int sqlResult = sqlite3_prepare_v2(db, "SELECT nodehandle, counter, node FROM nodes WHERE share & ? != 0", -1, &stmt, NULL);
+    int sqlResult = sqlite3_prepare_v2(
+        db,
+        "SELECT nodehandle, counter, node FROM nodes WHERE "
+        "(?1 = 1 AND share = 1 OR share = 3 OR share = 5 OR share = 7 OR share = "
+        "9 OR share = 11  OR share = 13 OR share = 15) OR"
+        "(?1 = 2 AND share = 2 OR share = 3 OR share = 6 OR share = 7 OR share = "
+        "10 OR share = 11  OR share = 14 OR share = 15) OR"
+        "(?1 = 4 AND share = 4 OR share = 5 OR share = 6 OR share = 7 OR share = "
+        "12 OR share = 13  OR share = 14 OR share = 15) OR"
+        "(?1 = 8 AND share = 8 OR share = 9 OR share = 10 OR share = 11 OR share "
+        "= 12 OR share = 13  OR share = 14 OR share = 15)",
+        -1,
+        &stmt,
+        NULL);
     if (sqlResult == SQLITE_OK)
     {
         if ((sqlResult = sqlite3_bind_int(stmt, 1, static_cast<int>(shareType))) == SQLITE_OK)
@@ -1635,8 +1776,8 @@ bool SqliteAccountState::getChildren(const mega::NodeSearchFilter& filter,
             "SELECT nodehandle, counter, node "s +
             "FROM nodes "
             "WHERE (parenthandle = " + idParentHand + ") " // Versions aren't taken in consideration
-            "AND matchFilter(" + idFilter + ", flags, type, ctime, mtime, mimetypeVirtual, name, description, tags, fav)"
-            "ORDER BY \n" +
+             "AND matchFilter(" + idFilter + ", flags, type, ctime, mtime, mimetypeVirtual, name, description, tags, fav)"
+             "ORDER BY \n" +
             OrderByClause::get(order) + " \n" +
             "LIMIT " + idPageSize + " OFFSET " + idPageOff;
         // clang-format on
@@ -2497,14 +2638,18 @@ void SqliteAccountState::userMatchFilter(sqlite3_context* context, int argc, sql
         assert(false);
         return;
     }
-    // Versioning
-    constexpr int64_t versionFlag = 1 << Node::FLAGS_IS_VERSION;
-    const int64_t flags = sqlite3_value_int64(argv[1]);
-    if ((flags & versionFlag) != 0)
-        return;
 
     auto filter = static_cast<const NodeSearchFilter*>(
         sqlite3_value_pointer(argv[0], NodeSearchFilterPtrStr));
+
+    const int64_t flags = sqlite3_value_int64(argv[1]);
+    // Do not include versions
+    if (!filter->includeVersions())
+    {
+        constexpr int64_t versionFlag = 1 << Node::FLAGS_IS_VERSION;
+        if ((flags & versionFlag) != 0)
+            return;
+    }
 
     // type
     const nodetype_t type = static_cast<nodetype_t>(sqlite3_value_int(argv[2]));

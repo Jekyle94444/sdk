@@ -28,10 +28,12 @@
 #include "network_connectivity_test_helpers.h"
 #include "node.h"
 #include "nodemanager.h"
+#include "setandelement.h"
 #include "textchat.h"
 #include "types.h"
 
 #include <memory>
+#include <optional>
 #include <variant>
 
 namespace mega {
@@ -347,10 +349,6 @@ public:
     bool procresult(Result, JSON&) override;
 
     CommandSetKeyPair(MegaClient*, const byte*, unsigned, const byte*, unsigned);
-
-private:
-    std::unique_ptr<byte[]> privkBuffer;
-    unsigned len;
 };
 
 // set visibility
@@ -1001,7 +999,7 @@ class MEGA_API CommandEnumerateQuotaItems : public Command
 public:
     bool procresult(Result, JSON&) override;
 
-    CommandEnumerateQuotaItems(MegaClient*);
+    CommandEnumerateQuotaItems(const std::optional<std::string>& countryCode, MegaClient*);
 };
 
 class MEGA_API CommandSubmitPurchaseReceipt : public Command
@@ -1708,20 +1706,31 @@ public:
     CommandDismissBanner(MegaClient*, int id, m_time_t ts);
 };
 
-
 //
 // Sets and Elements
 //
-
 class CommandSE : public Command // intermediary class to avoid code duplication
 {
 protected:
-    bool procjsonobject(JSON& json, handle& id, m_time_t& ts, handle* u, m_time_t* cts = nullptr,
-                        handle* s = nullptr, int64_t* o = nullptr, handle* ph = nullptr,
+    bool procjsonobject(JSON& json,
+                        handle& id,
+                        m_time_t& ts,
+                        handle* u,
+                        m_time_t* cts = nullptr,
+                        handle* s = nullptr,
+                        int64_t* o = nullptr,
+                        PublicLinkSet* publicLinkSet = nullptr,
                         uint8_t* setType = nullptr) const;
-    bool procresultid(JSON& json, const Result& r, handle& id, m_time_t& ts, handle* u,
-                      m_time_t* cts = nullptr, handle* s = nullptr, int64_t* o = nullptr,
-                      handle* ph = nullptr, uint8_t* setType = nullptr) const;
+    bool procresultid(JSON& json,
+                      const Result& r,
+                      handle& id,
+                      m_time_t& ts,
+                      handle* u,
+                      m_time_t* cts = nullptr,
+                      handle* s = nullptr,
+                      int64_t* o = nullptr,
+                      PublicLinkSet* publicLinkSet = nullptr,
+                      uint8_t* setType = nullptr) const;
     bool procerrorcode(const Result& r, Error& e) const;
     bool procExtendedError(JSON& json, int64_t& errCode, handle& eid) const;
 };
@@ -1962,7 +1971,7 @@ public:
     }
 
 private:
-    std::string mHost; // "nz.vpn.mega.nz"
+    std::string mHost;
     std::vector<std::string> mDns; // {"8.8.8.8", "8.8.4.4", ...}
     std::vector<std::string> mAdBlockingDns;
 };
@@ -2296,6 +2305,46 @@ public:
 
 private:
     Cb mCompletion;
+};
+
+class MEGA_API CommandSetThrottlingParams: public Command
+{
+public:
+    struct ThrottlingParamsFromAPI
+    {
+        m_off_t updateRateInSeconds{-1};
+        m_off_t maxUploadsBeforeThrottle{-1};
+        m_off_t uploadCounterInactivityTime{-1};
+    };
+
+    using ResultVariant = std::variant<Error, ThrottlingParamsFromAPI>;
+    using Completion = std::function<void(const ResultVariant&)>;
+
+    CommandSetThrottlingParams(const MegaClient&, Completion&& completion);
+    bool procresult(Result, JSON&) override;
+
+private:
+    static std::pair<bool /* parseOk */, std::optional<ThrottlingParamsFromAPI>>
+        parseJson(JSON& json);
+
+    Completion mCompletion;
+};
+
+class MEGA_API CommandGetSubscriptionCancellationDetails: public Command
+{
+public:
+    using CompletionCallback = std::function<void(const Error& /*e*/,
+                                                  string&& /*originalTransactionId*/,
+                                                  int /*expiresDate*/,
+                                                  int /*cancelledDate*/)>;
+    CommandGetSubscriptionCancellationDetails(MegaClient*,
+                                              const char* originalTransactionId,
+                                              unsigned int gatewayId,
+                                              CompletionCallback&& completion = nullptr);
+    bool procresult(Result, JSON&) override;
+
+private:
+    CompletionCallback mCompletion;
 };
 
 } // namespace

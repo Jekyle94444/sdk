@@ -1,8 +1,8 @@
 #include <cassert>
 #include <cstring>
 
+#include <mega/common/normalized_path.h>
 #include <mega/fuse/common/logging.h>
-#include <mega/fuse/common/normalized_path.h>
 #include <mega/fuse/platform/constants.h>
 #include <mega/fuse/platform/dispatcher.h>
 #include <mega/fuse/platform/mount.h>
@@ -16,6 +16,8 @@ namespace fuse
 {
 namespace platform
 {
+
+using namespace common;
 
 static Dispatcher& dispatcher(FSP_FILE_SYSTEM& filesystem);
 
@@ -328,6 +330,7 @@ NTSTATUS Dispatcher::open(FSP_FILE_SYSTEM* filesystem,
     assert(info);
 
     auto& dispatcher = platform::dispatcher(*filesystem);
+    auto& mount = dispatcher.mMount;
     auto path_ = normalize(&path[1]);
     
     FUSEDebugF("open: path: %s", fromWideString(path_).c_str());
@@ -335,11 +338,7 @@ NTSTATUS Dispatcher::open(FSP_FILE_SYSTEM* filesystem,
     logAccess("open", access);
     logOptions("open", options);
 
-    auto result = dispatcher.mMount.open(path_,
-                                         options,
-                                         access,
-                                         *context,
-                                         *info);
+    auto result = mount.open(path_, options, access, *context, *info);
 
     FUSEDebugF("open: context: %p, path: %s, result: %lu",
                *context,

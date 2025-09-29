@@ -1,18 +1,17 @@
-#include <mega/fuse/common/bind_handle.h>
+#include <mega/common/error_or.h>
+#include <mega/common/lock.h>
+#include <mega/common/node_info.h>
+#include <mega/common/task_executor.h>
+#include <mega/common/upload.h>
 #include <mega/fuse/common/client.h>
-#include <mega/fuse/common/error_or.h>
 #include <mega/fuse/common/file_cache.h>
 #include <mega/fuse/common/file_info.h>
 #include <mega/fuse/common/file_inode.h>
 #include <mega/fuse/common/file_io_context.h>
 #include <mega/fuse/common/inode_db.h>
 #include <mega/fuse/common/inode_info.h>
-#include <mega/fuse/common/lock.h>
 #include <mega/fuse/common/logging.h>
-#include <mega/fuse/common/node_info.h>
 #include <mega/fuse/common/service_flags.h>
-#include <mega/fuse/common/task_executor.h>
-#include <mega/fuse/common/upload.h>
 #include <mega/fuse/platform/mount.h>
 #include <mega/fuse/platform/service_context.h>
 
@@ -24,8 +23,11 @@
 
 namespace mega
 {
-namespace fuse
+namespace common
 {
+
+using fuse::FileIOContext;
+using fuse::toString;
 
 void LockableTraits<FileIOContext>::acquired(const FileIOContext& context)
 {
@@ -56,6 +58,13 @@ void LockableTraits<FileIOContext>::tryAcquire(const FileIOContext& context)
     FUSEDebugF("Trying to acquire lock on file IO context %s",
                toString(context.id()).c_str());
 }
+
+} // common
+
+namespace fuse
+{
+
+using namespace common;
 
 class FileIOContext::FlushContext
 {
@@ -907,18 +916,13 @@ void FileIOContext::FlushContext::uploaded(ErrorOr<UploadResult> result)
     }
 
     // Extract bind callback and bind handle.
-    auto bind       = std::move(std::get<0>(*result));
-    auto bindHandle = std::move(std::get<1>(*result));
+    auto bind = std::move(*result);
 
     // Sanity.
     assert(bind);
-    assert(bindHandle);
-
-    // Let the cache know which file's associated with this bind handle.
-    auto i = inodeDB().binding(*mContext.mFile, std::move(bindHandle));
 
     // Called when we've bound a name to our uploaded content.
-    auto bound = [i, this](ErrorOr<NodeHandle> result) {
+    auto bound = [this](ErrorOr<NodeHandle> result) {
         // A name's been bound to our content.
         if (result)
         {
@@ -931,9 +935,6 @@ void FileIOContext::FlushContext::uploaded(ErrorOr<UploadResult> result)
             // Update the file's information.
             mContext.mFile->info(*info);
         }
-
-        // Let the cache know we're done with the bind handle.
-        inodeDB().bound(*mContext.mFile, i);
 
         // Let waiters know the upload's complete.
         mCV.notify_all();

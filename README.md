@@ -39,7 +39,7 @@ For the SDK development and compilation we use CMake as the cross-platform proje
 Some common development tools should be available in the system to be able to build the MEGA SDK and the needed dependencies:
 
 - Git: Use the one from your system package manager or install it from https://git-scm.com
-- CMake 3.18 or higher: Use the one from your system package manager or install it from https://cmake.org
+- CMake 3.19 or higher: Use the one from your system package manager or install it from https://cmake.org
 
 #### Windows
 
@@ -47,7 +47,7 @@ Ensure you have installed Visual Studio, with the necessary components for build
 
  - [Visual Studio 2022](https://visualstudio.microsoft.com/vs/)
  - MSVC v142
- - Windows 10 SDK (10.0.19041.0)
+ - Windows 10 SDK (10.0.22621.0)
 
 #### MacOS
 
@@ -58,7 +58,7 @@ Developer tools, run the following command and follow the instructions:
 
 The following packages should be available in the system as well:
 
- - autoconf, autoconf-archive, automake, pkg-config and nasm.
+ - autoconf, autoconf-archive, automake, pkg-config, nasm and libtool.
 
 You can use any package manager if you have one installed or build and install them from sources
 
@@ -66,7 +66,7 @@ You can use any package manager if you have one installed or build and install t
 
 For debian-based distributions, you can install the needed compilers and tools using the following command:
 
-	sudo apt install build-essential curl zip unzip autoconf autoconf-archive nasm
+	sudo apt install build-essential curl zip unzip autoconf autoconf-archive nasm libtool-bin
 
 Package names may vary for other Linux distros, but it should build successfully with similar packages to the ones listed above.
 
@@ -137,9 +137,9 @@ To run the example app `megacli`, go to the `examples/megacli` directory in the 
 
 - Arch
 - Debian 11
-- Fedora 38
-- OpenSUSE Leap 15.5
-- Raspberry Pi OS Lite (Debian 11)
+- Fedora 40
+- OpenSUSE Leap 15.6
+- Raspberry Pi OS Lite (Debian 12)
 - Ubuntu 20.04 LTS
 
 ### iOS
@@ -153,8 +153,8 @@ To run the example app `megacli`, go to the `examples/megacli` directory in the 
 
 ### Windows
 
-- Windows 7
-- Windows Server 2008
+- Windows 8
+- Windows Server 2012
 
 ## Usage
 

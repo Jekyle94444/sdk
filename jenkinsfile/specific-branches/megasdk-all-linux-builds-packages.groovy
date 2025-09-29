@@ -12,7 +12,7 @@ pipeline {
         booleanParam(name: 'UPLOAD_TO_REPOSITORY', defaultValue: false, description: 'Should the package be uploaded to artifactory?')
         booleanParam(name: 'RESULT_TO_SLACK', defaultValue: true, description: 'Should the job result be sent to slack?')
         booleanParam(name: 'CUSTOM_BUILD', defaultValue: false, description: 'If true, will use DISTRO_TO_BUILD and ARCH_TO_BUILD. If false, will build all distributions')
-        choice(name: 'ARCH_TO_BUILD', choices: ['amd64', 'armhf'], description: 'Only used if CUSTOM_BUILD is true')        
+        choice(name: 'ARCH_TO_BUILD', choices: ['amd64', 'armhf','arm64'], description: 'Only used if CUSTOM_BUILD is true')        
         string(name: 'DISTRO_TO_BUILD', defaultValue: 'xUbuntu_22.04', description: 'Only used if CUSTOM_BUILD is true')
         string(name: 'SDK_BRANCH', defaultValue: 'develop', description: 'Define a custom SDK branch.')
     }
@@ -90,41 +90,54 @@ pipeline {
                 axes {
                     axis { 
                         name 'ARCHITECTURE'; 
-                        values 'amd64','armhf'
+                        values 'amd64','armhf','arm64'
                     }
                     axis { 
                         name 'DISTRO'; 
-                        values  'xUbuntu_24.10','xUbuntu_24.04','xUbuntu_22.04', 'xUbuntu_20.04',
-                                'Debian_11','Debian_12','Debian_testing',
+                        values  'xUbuntu_25.10','xUbuntu_25.04','xUbuntu_24.04','xUbuntu_22.04',
+                                'Debian_11','Debian_12','Debian_13','Debian_testing',
                                 'DEB_Arch_Extra',
-                                'Raspbian_11', 'Raspbian_12',
-                                'Fedora_39', 'Fedora_40',
-                                'openSUSE_Leap_15.5','openSUSE_Leap_15.6', 'openSUSE_Tumbleweed'
+                                'Raspbian_12',
+                                'Fedora_42',
+                                'AlmaLinux_9','CentOS_Stream_9',
+                                'openSUSE_Leap_15.6', 'openSUSE_Tumbleweed'
                     }
                 }
                 excludes {
-                    exclude {   
+                    exclude {
                         axis { 
                             name 'ARCHITECTURE'; 
-                            values 'armhf' 
+                            values 'armhf'
                         } 
                         axis { 
                             name 'DISTRO'; 
-                            values  'xUbuntu_24.10','xUbuntu_24.04','xUbuntu_22.04', 'xUbuntu_20.04',
-                                    'Debian_11','Debian_12','Debian_testing',
+                            values  'xUbuntu_25.10','xUbuntu_25.04','xUbuntu_24.04','xUbuntu_22.04',
+                                    'Debian_11','Debian_12','Debian_13','Debian_testing',
                                     'DEB_Arch_Extra',
-                                    'Fedora_39', 'Fedora_40',
-                                    'openSUSE_Leap_15.5','openSUSE_Leap_15.6', 'openSUSE_Tumbleweed'
+                                    'Fedora_42',
+                                    'AlmaLinux_9','CentOS_Stream_9',
+                                    'openSUSE_Leap_15.6', 'openSUSE_Tumbleweed'
                         }
                     }
-                    exclude {   
+                    exclude {
                         axis { 
                             name 'ARCHITECTURE'; 
                             values 'amd64' 
                         } 
                         axis { 
                             name 'DISTRO'; 
-                            values  'Raspbian_11', 'Raspbian_12'
+                            values  'Raspbian_12'
+                        }
+                    }
+                    exclude {
+                        axis { 
+                            name 'ARCHITECTURE'; 
+                            values 'arm64' 
+                        } 
+                        axis { 
+                            name 'DISTRO'; 
+                            values  'DEB_Arch_Extra','Debian_11','xUbuntu_24.04','Fedora_42','CentOS_Stream_9',
+                                    'Raspbian_12','openSUSE_Tumbleweed'
                         }
                     }
                 }
@@ -218,7 +231,7 @@ pipeline {
                                         ]
                                     }
                                     ]
-                                }' ${SLACK_WEBHOOK_URL}
+                                }' \${SLACK_WEBHOOK_URL}
                         """
                     }
                 }

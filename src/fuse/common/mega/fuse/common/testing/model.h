@@ -5,11 +5,12 @@
 #include <memory>
 #include <string>
 
-#include <mega/fuse/common/node_info_forward.h>
+#include <mega/common/node_info_forward.h>
 #include <mega/fuse/common/testing/client_forward.h>
 #include <mega/fuse/common/testing/cloud_path_forward.h>
 #include <mega/fuse/common/testing/model_forward.h>
 #include <mega/fuse/common/testing/path_forward.h>
+#include <mega/fuse/platform/date_time.h>
 
 #include <tests/stdfs.h>
 
@@ -65,7 +66,7 @@ public:
         virtual void populate(fs::path path) const = 0;
 
         // When was this node last modified?
-        std::chrono::system_clock::time_point mModified;
+        DateTime mModified;
 
         // The name of the node.
         std::string mName;
@@ -100,7 +101,7 @@ public:
         auto directory() -> DirectoryNode* override;
 
         // Create a directory based on the content of the cloud.
-        static auto from(const Client& client, NodeInfo info) -> NodePtr;
+        static auto from(const Client& client, common::NodeInfo info) -> NodePtr;
 
         // Create a directory based on the content of path.
         static auto from(const fs::path& path) -> NodePtr;
@@ -137,7 +138,7 @@ public:
         auto file() -> FileNode* override;
 
         // Create a file based on the content of the cloud.
-        static auto from(const Client& client, NodeInfo info) -> NodePtr;
+        static auto from(const Client& client, common::NodeInfo info) -> NodePtr;
 
         // Create a file based on the content of path.
         static auto from(const fs::path& path) -> NodePtr;
@@ -152,7 +153,7 @@ public:
         std::string mContent;
         
         // How large is this file?
-        std::uintmax_t mSize;
+        std::uint64_t mSize;
     }; // FileNode
 
     Model();

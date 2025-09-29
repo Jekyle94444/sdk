@@ -14,7 +14,7 @@
 #    target_link_libraries(<target> PRIVATE PkgConfig::SDKlib)
 #
 
-cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.20)
 
 # Qt Creator configures VCPKG automatically. Disable it, we may want to use different tripplets, paths...
 set(QT_CREATOR_SKIP_VCPKG_SETUP TRUE CACHE BOOL "")
@@ -80,6 +80,9 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
 endif()
 
 message(STATUS "Generator: ${CMAKE_GENERATOR}")
+if(CMAKE_SYSTEM_VERSION)
+    message(STATUS "Target OS version: ${CMAKE_SYSTEM_VERSION}")
+endif()
 if(CMAKE_GENERATOR_PLATFORM)
     message(STATUS "Platform: ${CMAKE_GENERATOR_PLATFORM}")
 endif()
@@ -129,6 +132,10 @@ endif()
 
 if(ENABLE_ISOLATED_GFX AND NOT USE_FREEIMAGE)
     message(FATAL_ERROR "USE_FREEIMAGE is required when ENABLE_ISOLATED_GFX is enabled.")
+endif()
+
+if(NOT ENABLE_MEDIA_FILE_METADATA AND USE_MEDIAINFO)
+    message(FATAL_ERROR "Use ENABLE_MEDIA_FILE_METADATA option instead of USE_MEDIAINFO")
 endif()
 
 message(STATUS "Building SDKlib v${PROJECT_VERSION}")

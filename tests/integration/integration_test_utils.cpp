@@ -11,11 +11,7 @@
 namespace sdk_test
 {
 using namespace mega;
-using namespace std::chrono_literals;
 using namespace testing;
-
-static constexpr auto MAX_TIMEOUT = 3min; // Timeout for operations in this file
-
 #ifdef ENABLE_SYNC
 
 /**
@@ -74,6 +70,15 @@ std::unique_ptr<::mega::MegaSync> waitForSyncState(MegaApi* megaApi,
                             {
                                 return megaApi->getSyncByBackupId(backupID);
                             });
+}
+
+bool waitForSyncStallState(MegaApi* const megaApi)
+{
+    const auto isSyncStalledPred = [&megaApi]() -> bool
+    {
+        return isSyncStalled(megaApi);
+    };
+    return waitFor(isSyncStalledPred, 10s);
 }
 
 static handle createSyncAux(MegaApi* megaApi,
@@ -166,6 +171,14 @@ bool disableSync(MegaApi* megaApi, const handle backupID)
     return setSyncRunState(megaApi, backupID, MegaSync::SyncRunningState::RUNSTATE_DISABLED);
 }
 
+bool isSyncStalled(MegaApi* const megaApi)
+{
+    if (megaApi == nullptr)
+        return false;
+
+    return megaApi->isSyncStalled();
+}
+
 std::vector<std::unique_ptr<MegaSyncStall>> getStalls(MegaApi* megaApi)
 {
     if (megaApi == nullptr)
@@ -238,6 +251,59 @@ void ensureAccountDeviceName(MegaApi* megaApi)
     ASSERT_TRUE(rl.waitForFinishOrTimeout(MAX_TIMEOUT));
 }
 
+std::optional<int> downloadNode(MegaApi* megaApi,
+                                MegaNode* node,
+                                const std::filesystem::path& fsPath,
+                                bool pathIsFolder,
+                                const std::chrono::seconds timeoutInSecs,
+                                const int collisionCheck,
+                                const int collisionResolution,
+                                const char* customName,
+                                const char* appData,
+                                const bool startFirst,
+                                MegaCancelToken* cancelToken,
+                                const bool undelete)
+{
+    if (!megaApi || !node)
+    {
+        LOG_err << "test_utils(downloadFile): EARGS";
+        return std::nullopt;
+    }
+
+    std::optional<int> err{std::nullopt};
+    testing::NiceMock<MockMegaTransferListener> mtl{megaApi};
+    EXPECT_CALL(mtl, onTransferFinish)
+        .WillOnce(
+            [&mtl, &err](MegaApi*, MegaTransfer*, MegaError* error)
+            {
+                err = error ? error->getErrorCode() : API_EINTERNAL;
+                mtl.markAsFinished();
+            });
+    std::string downLoadPath{fsPath.u8string()};
+    if (pathIsFolder && downLoadPath.back() != std::filesystem::path::preferred_separator)
+    {
+        downLoadPath.push_back(std::filesystem::path::preferred_separator);
+    }
+
+    megaApi->startDownload(node,
+                           downLoadPath.c_str(),
+                           customName,
+                           appData,
+                           startFirst,
+                           cancelToken,
+                           collisionCheck,
+                           collisionResolution,
+                           undelete,
+                           &mtl);
+
+    if (!mtl.waitForFinishOrTimeout(timeoutInSecs))
+    {
+        LOG_err << "test_utils(downloadFile): waitForFinishOrTimeout timeout expired";
+        return std::nullopt;
+    }
+    return err;
+}
+
 std::unique_ptr<MegaNode> uploadFile(MegaApi* megaApi,
                                      const std::filesystem::path& localPath,
                                      MegaNode* parentNode)
@@ -289,6 +355,26 @@ handle createPasswordNode(MegaApi* megaApi,
     megaApi->createPasswordNode(name.c_str(), data, parentNodeHandle, &rl);
     EXPECT_TRUE(rl.waitForFinishOrTimeout(MAX_TIMEOUT))
         << "Password node not properly generated. Name: " << name;
+    return newPwdNodeHandle;
+}
+
+handle createCreditCardNode(::mega::MegaApi* megaApi,
+                            const std::string& name,
+                            const ::mega::MegaNode::CreditCardNodeData* data,
+                            const ::mega::handle parentNodeHandle)
+{
+    NiceMock<MockRequestListener> rl;
+    handle newPwdNodeHandle{UNDEF};
+    rl.setErrorExpectations(API_OK,
+                            _,
+                            MegaRequest::TYPE_CREATE_PASSWORD_NODE,
+                            [&newPwdNodeHandle](const MegaRequest& req)
+                            {
+                                newPwdNodeHandle = req.getNodeHandle();
+                            });
+    megaApi->createCreditCardNode(name.c_str(), data, parentNodeHandle, &rl);
+    EXPECT_TRUE(rl.waitForFinishOrTimeout(MAX_TIMEOUT))
+        << "CreditCard node not properly generated. Name: " << name;
     return newPwdNodeHandle;
 }
 }

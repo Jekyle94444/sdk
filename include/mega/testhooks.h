@@ -50,11 +50,16 @@ namespace mega {
         std::function<bool(HttpReq*)> onHttpReqPost;
         std::function<void(RaidBufferManager*)> onSetIsRaid;
         std::function<void(error e)> onUploadChunkFailed;
+        std::function<void(const m_off_t)> onProgressCompletedUpdate;
+        std::function<void(const m_off_t)> onProgressContiguousUpdate;
         std::function<bool(Transfer*, TransferDbCommitter&)> onUploadChunkSucceeded;
+        std::function<void(const double, const m_off_t, const m_off_t)> onTransferReportProgress;
         std::function<void(error e)> onDownloadFailed;
         std::function<void(std::unique_ptr<HttpReq>&)> interceptSCRequest;
         std::function<void(m_off_t&)> onLimitMaxReqSize;
         std::function<void(int&, unsigned)> onHookNumberOfConnections;
+        std::function<void(bool&)> onHookDownloadRequestSingleUrl;
+        std::function<void(m_time_t&)> onHookResetTransferLastAccessTime;
     };
 
     extern MegaTestHooks globalMegaTestHooks;
@@ -75,6 +80,33 @@ namespace mega {
             if (!globalMegaTestHooks.onUploadChunkSucceeded(transfer, committer)) return; \
         }}
 
+    // get transfer progress completed updates
+#define DEBUG_TEST_HOOK_ON_PROGRESS_COMPLETED_UPDATE(p) \
+    { \
+        if (globalMegaTestHooks.onProgressCompletedUpdate) \
+        { \
+            globalMegaTestHooks.onProgressCompletedUpdate(p); \
+        } \
+    }
+
+    // get transfer progress contiguous updates
+#define DEBUG_TEST_HOOK_ON_PROGRESS_CONTIGUOUS_UPDATE(p) \
+    { \
+        if (globalMegaTestHooks.onProgressContiguousUpdate) \
+        { \
+            globalMegaTestHooks.onProgressContiguousUpdate(p); \
+        } \
+    }
+
+    // get reports counts updates
+#define DEBUG_TEST_HOOK_ON_TRANSFER_REPORT_PROGRESS(p, fp, pb) \
+    { \
+        if (globalMegaTestHooks.onTransferReportProgress) \
+        { \
+            globalMegaTestHooks.onTransferReportProgress(p, fp, pb); \
+        } \
+    }
+
     // watch out for download issues
     #define DEBUG_TEST_HOOK_DOWNLOAD_FAILED(X)  { if (globalMegaTestHooks.onDownloadFailed) globalMegaTestHooks.onDownloadFailed(X); }
 
@@ -84,6 +116,19 @@ namespace mega {
     // Ensure new RaidReq number of connections is taken from the client's number of connections
     #define DEBUG_TEST_HOOK_NUMBER_OF_CONNECTIONS(connectionsInOutVar, clientNumberOfConnections) { if (globalMegaTestHooks.onHookNumberOfConnections) globalMegaTestHooks.onHookNumberOfConnections(connectionsInOutVar, clientNumberOfConnections); }
 
+    // For CommandGetFile, so a raided file can request the unraided copy.
+#define DEBUG_TEST_HOOK_DOWNLOAD_REQUEST_SINGLEURL(singleUrlFlag) \
+    { \
+        if (globalMegaTestHooks.onHookDownloadRequestSingleUrl) \
+            globalMegaTestHooks.onHookDownloadRequestSingleUrl(singleUrlFlag); \
+    }
+
+#define DEBUG_TEST_HOOK_RESET_TRANSFER_LASTACCESSTIME(lastAccessTime) \
+    { \
+        if (globalMegaTestHooks.onHookResetTransferLastAccessTime) \
+            globalMegaTestHooks.onHookResetTransferLastAccessTime(lastAccessTime); \
+    }
+
 #else
     #define DEBUG_TEST_HOOK_HTTPREQ_POST(x)
     #define DEBUG_TEST_HOOK_RAIDBUFFERMANAGER_SETISRAID(x)
@@ -92,6 +137,11 @@ namespace mega {
     #define DEBUG_TEST_HOOK_DOWNLOAD_FAILED(X)
     #define DEBUG_TEST_HOOK_LIMIT_MAX_REQ_SIZE(X)
     #define DEBUG_TEST_HOOK_NUMBER_OF_CONNECTIONS(connectionsInOutVar, clientNumberOfConnections)
+#define DEBUG_TEST_HOOK_ON_PROGRESS_COMPLETED_UPDATE(p)
+#define DEBUG_TEST_HOOK_ON_PROGRESS_CONTIGUOUS_UPDATE(p)
+#define DEBUG_TEST_HOOK_ON_TRANSFER_REPORT_PROGRESS(p, fp, pb)
+#define DEBUG_TEST_HOOK_DOWNLOAD_REQUEST_SINGLEURL(singleUrlFlag)
+#define DEBUG_TEST_HOOK_RESET_TRANSFER_LASTACCESSTIME(lastAccessTime)
 #endif
 
 

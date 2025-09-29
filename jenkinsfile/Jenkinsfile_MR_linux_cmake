@@ -138,14 +138,18 @@ pipeline {
                     environment{
                         VCPKGPATH = "/opt/vcpkg"
                         BUILD_DIR = "build_dir"
+                        VCPKG_BINARY_SOURCES  = 'clear;x-aws,s3://vcpkg-cache/archives/,readwrite'
+                        AWS_ACCESS_KEY_ID     = credentials('s4_access_key_id_vcpkg_cache')
+                        AWS_SECRET_ACCESS_KEY = credentials('s4_secret_access_key_vcpkg_cache')
+                        AWS_ENDPOINT_URL      = "https://s3.g.s4.mega.io"
                     }
                     steps{
                         dir("${linux_sources_workspace}") {
                             sh "rm -rf ${BUILD_DIR}; mkdir ${BUILD_DIR}"
                             //Build SDK
                             sh "echo Building SDK"
-                            sh "cmake -DENABLE_QT_BINDINGS=ON -DENABLE_JAVA_BINDINGS=ON -DENABLE_CHAT=ON -DWITH_FUSE=1 -DCMAKE_BUILD_TYPE=Debug -DVCPKG_ROOT=${VCPKGPATH} ${BUILD_OPTIONS} -DCMAKE_VERBOSE_MAKEFILE=ON \
-                            -S ${linux_sources_workspace} -B ${linux_sources_workspace}/${BUILD_DIR}"
+                            sh "cmake -DENABLE_QT_BINDINGS=ON -DENABLE_JAVA_BINDINGS=ON -DENABLE_CHAT=ON -DENABLE_MEDIA_FILE_METADATA=ON -DWITH_FUSE=1 -DCMAKE_BUILD_TYPE=Debug -DVCPKG_ROOT=${VCPKGPATH} \
+                            ${BUILD_OPTIONS} -DCMAKE_VERBOSE_MAKEFILE=ON -S ${linux_sources_workspace} -B ${linux_sources_workspace}/${BUILD_DIR}"
                             sh "cmake --build ${linux_sources_workspace}/${BUILD_DIR} -j3"
                         }
                     }
@@ -196,18 +200,23 @@ pipeline {
                                         GFXWORKER_TEST_PATH=\"\$GFXWORKER_TEST_DIR\$GFXWORKER_TEST_NAME\"
                                         if [ -f \"\$GFXWORKER_TEST_PATH\" ]; then
                                             \$GFXWORKER_TEST_PATH || FAILED=2
+                                            gzip -c gfxworker_test_integration.log > gfxworker_test_integration_${BUILD_ID}.log.gz || :
+                                            rm gfxworker_test_integration.log || :
                                         fi
                                     fi
 
                                     if [ -z \"\$FAILED\" ]; then
                                         if [ -z \"${TESTS_PARALLEL}\" ]; then
                                             # Sequential run
-                                            ${env.BUILD_DIR}/tests/integration/test_integration --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} ${GTEST_FILTER} ${GTEST_REPEAT} &
+                                            ${env.BUILD_DIR}/tests/integration/test_integration --FREEACCOUNTS --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} ${GTEST_FILTER} ${GTEST_REPEAT} &
                                             pid=\$!
                                             wait \$pid || FAILED=3
+                                            if [ \"\$FAILED\" = \"3\" ]; then
+                                                cp ${linux_sources_workspace}/pid_\$pid/test_integration.log .
+                                            fi
                                         else
                                             # Parallel run
-                                            ${env.BUILD_DIR}/tests/integration/test_integration --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} ${GTEST_FILTER} ${GTEST_REPEAT} ${TESTS_PARALLEL} 2>&1 | tee tests.stdout
+                                            ${env.BUILD_DIR}/tests/integration/test_integration --FREEACCOUNTS --CI --USERAGENT:${env.USER_AGENT_TESTS_SDK} --APIURL:${APIURL_TO_TEST} ${GTEST_FILTER} ${GTEST_REPEAT} ${TESTS_PARALLEL} 2>&1 | tee tests.stdout
                                             [ \"\${PIPESTATUS[0]}\" != \"0\" ] && FAILED=3
                                         fi
                                     fi
@@ -289,7 +298,11 @@ pipeline {
             }
             post{
                 always {
-                    archiveArtifacts artifacts: 'test_integration*, core.tar.gz', fingerprint: true
+                    dir("${env.WORKSPACE}/src/fuse/supported/posix/scripts") {
+                        echo "Final cleanup of any stale MEGA-FS mounts"
+                        sh "./cleanup.sh '${env.WORKSPACE}'"
+                    }
+                    archiveArtifacts artifacts: '*test_integration*, core.tar.gz', fingerprint: true
                     deleteDir()
                 }
             }

@@ -727,7 +727,7 @@ TEST_F(SqliteDBTest, RootPath)
 TEST(LocalPath, AppendWithSeparator)
 {
     LocalPath source;
-    LocalPath target;
+    LocalPath target = LocalPath::fromRelativePath("");
 
     // Doesn't add a separator if the target is empty.
     source = LocalPath::fromRelativePath("a");
@@ -1428,49 +1428,6 @@ TEST(ScopedHelpers, ScopedDestructor)
     EXPECT_EQ(x, 4);
 }
 
-TEST(ScopedHelpers, ScopedLengthRestorer)
-{
-    // Test with local path.
-    {
-        auto x = LocalPath::fromAbsolutePath("x");
-        auto originalSize = SizeTraits<LocalPath>::size(x);
-
-        {
-            auto r = makeScopedSizeRestorer(x);
-            x.appendWithSeparator(LocalPath::fromRelativePath("y"), true);
-            EXPECT_NE(SizeTraits<LocalPath>::size(x), originalSize);
-        }
-
-        EXPECT_EQ(SizeTraits<LocalPath>::size(x), originalSize);
-    }
-
-    // Test with vector.
-    {
-        std::vector<std::string> x(1, "foo");
-
-        auto originalSize = x.size();
-
-        {
-            auto r = makeScopedSizeRestorer(x);
-            x.emplace_back("bar");
-        }
-
-        EXPECT_EQ(x.size(), originalSize);
-    }
-
-    // Test with explicit new size given.
-    {
-        std::string x;
-
-        {
-            auto r = makeScopedSizeRestorer(x, 32);
-            EXPECT_EQ(x.size(), 32);
-        }
-
-        EXPECT_TRUE(x.empty());
-    }
-}
-
 TEST(ScopedHelpers, ScopedValue)
 {
     const std::string originalValue = "before";
@@ -1816,4 +1773,69 @@ TEST(RangeTest, VerifySingleElementRange)
 
     EXPECT_EQ(count, 1);
     EXPECT_EQ(valueCollected, 7u);
+}
+
+struct FileAccessTest: ::testing::Test
+{
+    FileAccessTest():
+        Test(),
+        mFSAccess(),
+        mName(LocalPath::fromAbsolutePath("file"))
+    {}
+
+    // Called before any test in the fixture is executed.
+    void SetUp() override
+    {
+        // Remove the file if it's present after a previous test run.
+        ASSERT_TRUE(mFSAccess.unlinklocal(mName) || !mFSAccess.target_exists);
+    }
+
+    // Convenience.
+    ::mega::FSLogging NO_LOGGING = ::mega::FSLogging::noLogging;
+
+    // So we can get our hands on a FileAccess instance.
+    FSACCESS_CLASS mFSAccess;
+
+    // The name of our test file.
+    ::mega::LocalPath mName;
+}; // FileAccessTest
+
+TEST_F(FileAccessTest, OpenForReadWriteSucceeds)
+{
+    // So we can open a file.
+    auto fileAccess = mFSAccess.newfileaccess(false);
+
+    // Sanity.
+    ASSERT_TRUE(fileAccess);
+
+    // Opening for reading and writing should create a new file if necessary.
+    EXPECT_TRUE(fileAccess->fopen(mName, true, true, NO_LOGGING));
+}
+
+TEST_F(FileAccessTest, OpenEquivalence)
+{
+    auto fileAccess0 = mFSAccess.newfileaccess(false);
+    auto fileAccess1 = mFSAccess.newfileaccess(false);
+
+    // Sanity.
+    ASSERT_TRUE(fileAccess0);
+    ASSERT_TRUE(fileAccess1);
+
+    // Create a new file.
+    ASSERT_TRUE(fileAccess0->fopen(mName, true, true, NO_LOGGING));
+
+    // Open an existing file.
+    EXPECT_TRUE(fileAccess1->fopen(mName, true, true, NO_LOGGING));
+
+    // Convenience.
+    auto& lhs = *fileAccess0;
+    auto& rhs = *fileAccess1;
+
+    // Make sure selected state is equivalent.
+    EXPECT_EQ(lhs.fopenSucceeded, rhs.fopenSucceeded);
+    EXPECT_EQ(lhs.size, rhs.size);
+    EXPECT_EQ(lhs.mtime, rhs.mtime);
+    EXPECT_EQ(lhs.fsid, rhs.fsid);
+    EXPECT_EQ(lhs.type, rhs.type);
+    EXPECT_EQ(lhs.mIsSymLink, rhs.mIsSymLink);
 }

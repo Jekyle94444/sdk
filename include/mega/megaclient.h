@@ -24,6 +24,7 @@
 
 #include "account.h"
 #include "backofftimer.h"
+#include "canceller.h"
 #include "db.h"
 #include "drivenotify.h"
 #include "filefingerprint.h"
@@ -47,7 +48,7 @@
 #include "useralerts.h"
 
 // FUSE support.
-#include <mega/fuse/common/client_adapter.h>
+#include <mega/common/client_adapter.h>
 #include <mega/fuse/common/service.h>
 
 #include <optional>
@@ -860,7 +861,7 @@ public:
     void pausexfers(direction_t, bool pause, bool hard, TransferDbCommitter& committer);
 
     // maximum number of connections per transfer
-    static const unsigned MAX_NUM_CONNECTIONS = 6;
+    static const unsigned MAX_NUM_CONNECTIONS = 100;
 
     // set max connections per transfer
     void setmaxconnections(direction_t, int);
@@ -1273,6 +1274,31 @@ public:
                         const char* const newLocalRootPath,
                         std::function<void(error, SyncError)>&& completion);
 
+private:
+    static constexpr std::chrono::seconds TIMEOUT_TO_SET_SYNC_UPLOAD_THROTTLE_PARAMS_FROM_API{
+        86400};
+
+    std::chrono::steady_clock::time_point mSetSyncUploadThrottleParamsFromAPILastTime;
+
+    std::chrono::seconds timeSinceLastSetSyncUploadThrottleParamsFromAPI() const
+    {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::now() - mSetSyncUploadThrottleParamsFromAPILastTime);
+    }
+
+    void setSyncUploadThrottleParamsFromAPIAfterTimeout();
+
+    void handleSetThrottleResult(const CommandSetThrottlingParams::ResultVariant& result);
+
+public:
+    /**
+     * @brief Sets the upload throttling configurable values retrieved directly from API.
+     *
+     * @see Syncs::setThrottleUpdateRate()
+     * @see Syncs::setMaxUploadBeforeThrottle()
+     */
+    void setSyncUploadThrottleParamsFromAPI();
+
     /**
      * @brief Sets the upload throttling configurable value throttleUpdateRate.
      *
@@ -1321,8 +1347,9 @@ public:
         std::function<void(const error)>&& completion);
 
 public:
-
-#endif  // ENABLE_SYNC
+#else
+    void setSyncUploadThrottleParamsFromAPI() {}
+#endif // ENABLE_SYNC
 
     /**
      * @brief creates a tlv with one record and returns it encrypted with master key
@@ -1378,7 +1405,8 @@ public:
     handle_vector purchase_basket;
 
     // enumerate Pro account purchase options
-    void purchase_enumeratequotaitems();
+    // Optional countryCode to set the desired currency
+    void purchase_enumeratequotaitems(const std::optional<std::string>& countryCode = std::nullopt);
 
     // clear shopping basket
     void purchase_begin();
@@ -1411,12 +1439,18 @@ public:
     // send event
     void sendevent(int, const char *, const char* viewId = nullptr, bool addJourneyId = false);
     void sendevent(int, const char *, int tag, const char* viewId = nullptr, bool addJourneyId = false);
+    void processHashcashSendevent();
 
     // create support ticket
     void supportticket(const char *message, int type);
 
     // clean rubbish bin
     void cleanrubbishbin();
+
+    // process a received storage status value from API command and update the state if needed
+    // returns true if the storagestatus_t arg is expected (STORAGE_GREEN, STORAGE_ORANGE,
+    // STORAGE_RED), false otherwise.
+    bool processStorageStatusFromCmd(const storagestatus_t);
 
     // change the storage status
     bool setstoragestatus(storagestatus_t);
@@ -1538,7 +1572,9 @@ public:
     std::shared_ptr<Node> getovnode(Node *parent, string *name);
 
     // Load from db node children at first level
-    sharedNode_list getChildren(const Node *parent, CancelToken cancelToken = CancelToken());
+    sharedNode_list getChildren(const Node* parent,
+                                CancelToken cancelToken = CancelToken(),
+                                bool includeVersions = false);
 
     // Get number of children from a node
     size_t getNumberOfChildren(NodeHandle parentHandle);
@@ -1639,8 +1675,9 @@ public:
     // root URL for reqstat requests
     static const string REQSTATURL;
 
-    // root URL for Website
-    static const string MEGAURL;
+    // root URL getter and setter
+    static std::string getMegaURL();
+    static void setMegaURL(const std::string& url);
 
     // newsignup link URL prefix
     static const char* newsignupLinkPrefix();
@@ -1688,6 +1725,14 @@ public:
     bool driveMonitorEnabled();
 
 private:
+    // root URL for Website
+    static string MEGAURL;
+    static std::shared_mutex megaUrlMutex;
+
+    // possible root URLs
+    static const std::string MEGAURL_NZ;
+    static const std::string MEGAURL_APP;
+
 #ifdef USE_DRIVE_NOTIFICATIONS
     DriveInfoCollector mDriveInfoCollector;
 #endif
@@ -1731,6 +1776,8 @@ public:
     // lang URI component for API requests
     string lang;
 
+    std::atomic<bool> mEnableSearchDBIndexes{true};
+
     struct FolderLink {
         // public handle of the folder link ('&n=' param in the POST)
         handle mPublicHandle = UNDEF;
@@ -1758,9 +1805,6 @@ public:
 
     // next internal upload handle (call UploadHandle::next() to update value)
     UploadHandle mUploadHandle;
-
-    // just one notification after fetchnodes and catch-up actionpackets
-    bool notifyStorageChangeOnStateCurrent = false;
 
     // maximum number of concurrent transfers (uploads + downloads)
     static const unsigned MAXTOTALTRANSFERS;
@@ -1813,7 +1857,6 @@ public:
     std::shared_ptr<Node> sc_deltree();
     handle sc_newnodes(Node* priorActionpacketDeletedNode, bool& firstHandleMismatchedDelete);
     void sc_contacts();
-    void sc_keys();
     void sc_fileattr();
     void sc_userattr();
     bool sc_shares();
@@ -1852,9 +1895,6 @@ public:
 
     // add node to vector and return index
     unsigned addnode(sharedNode_vector* v, std::shared_ptr<Node> n) const;
-
-    // crypto request response
-    void cr_response(sharedNode_vector*, sharedNode_vector*, JSON*);
 
     // read node tree from JSON object
     void readtree(JSON*, Node* priorActionpacketDeletedNode, bool& firstHandleMatchedDelete);
@@ -1896,8 +1936,10 @@ public:
 
     void dodiscarduser(User* u, bool discardnotified);
 
-    void enabletransferresumption(const char *loggedoutid = NULL);
-    void disabletransferresumption(const char *loggedoutid = NULL);
+    void enabletransferresumption();
+    void disabletransferresumption();
+
+    void resumeTransfersForNotLoggedInInstance();
 
     // application callbacks
     struct MegaApp* app;
@@ -1952,8 +1994,13 @@ public:
     // None actions has been taken yet (reload, restart app, ...)
     bool accountShouldBeReloadedOrRestarted() const;
 
-    // This flag keeps the last error detected. It's overwritten by new errors and reset upon logout.It's cleaned after reload or other error is generated
-    ErrorReason mLastErrorDetected = ErrorReason::REASON_ERROR_NO_ERROR;
+    // This flag keeps the last fatal error detected. It's overwritten by new errors and reset upon
+    // logout. It's cleaned after reload or other error is generated
+    ErrorReason mLastFatalErrorDetected = ErrorReason::REASON_ERROR_NO_ERROR;
+
+    // This flag keeps the last DB error detected. It's overwritten by new errors and reset upon
+    // logout. It's cleaned after reload or other error is generated
+    DBError mLastDBErrorDetected = DBError::DB_ERROR_UNKNOWN;
 
     // initial state load in progress?  initial state can come from the database cache or via an 'f' command to the API.
     // Either way there can still be a lot of historic actionpackets to follow since that snaphot, especially if the user has not been online for a long time.
@@ -2253,6 +2300,9 @@ public:
 private:
     // Private helper method for getRecentActions
     recentactions_vector getRecentActionsFromSharedNodeVector(sharedNode_vector&& v);
+
+    std::string getTransferDBName();
+
 public:
     // get a vector of recent actions in the account
     recentactions_vector getRecentActions(unsigned maxcount,
@@ -2398,9 +2448,6 @@ public:
     // any other number -> parsing error
     int procphelement(JSON*);
 
-    void procsnk(JSON*);
-    void procsuk(JSON*);
-
     void procmcf(JSON*);
     void procmcna(JSON*);
 
@@ -2447,9 +2494,6 @@ public:
     // session ID length (binary)
     static const unsigned SIDLEN = 2 * SymmCipher::KEYLENGTH + USERHANDLE * 4 / 3 + 1;
 
-    void proccr(JSON*);
-    void procsr(JSON*);
-
     KeyManager mKeyManager;
 
     // account access: master key
@@ -2460,17 +2504,17 @@ public:
     SymmCipher tckey;
 
     // account access (full account): RSA private key
-    AsymmCipher asymkey;
-    string mPrivKey;    // serialized version for apps
+    AsymmCipher mPrivateRsaKey;
+    string mSerializedPrivateRsaKey; // serialized version for apps
 
     // RSA public key
-    AsymmCipher pubk;
+    AsymmCipher mPublicRsaKey;
 
     // EdDSA signing key (Ed25519 private key seed).
-    EdDSA *signkey;
+    EdDSA* mEd255Key;
 
     // ECDH key (x25519 private key).
-    ECDH *chatkey;
+    ECDH* mX255Key;
 
     // set when keys for every current contact have been checked
     AuthRingsMap mAuthRings;
@@ -2513,6 +2557,7 @@ public:
     bool discardnotifieduser(User *);
 
     PendingContactRequest* findpcr(handle);
+    std::optional<PendingContactRequest*> findpcr(const string&);
 
     // queue public key request for user
     User* getUserForSharing(const char* userID);
@@ -2530,6 +2575,13 @@ public:
     string getAuthURI(bool supressSID = false, bool supressAuthKey = false);
 
     bool setlang(string *code);
+
+    // Enable create DB indexes for queries used in search functionality
+    // By default is true (reset to default value at locallogout)
+    void enableSearchDBIndexes(bool enable);
+    // Drop DB indexes for queries used in search functionality
+    // It should be call just after open the DB
+    void dropSearchDBIndexes();
 
     // create a new folder with given name and stores its node's handle into the user's attribute ^!bak
     error setbackupfolder(const char* foldername, int tag, std::function<void(Error)> addua_completion);
@@ -2648,6 +2700,9 @@ public:
 
     // timestamp of the last login with user and password
     m_time_t tsLogin;
+
+    // snapshot of the global cancel_epoch_t when a login request is sent
+    cancel_epoch_t mLoginCancelSnapshot{};
 
     // true if user has disabled fileversioning
     bool versions_disabled;
@@ -2819,7 +2874,7 @@ private:
 // JourneyID and ViewID
 //
     // JourneyID for cs API requests and log events
-    JourneyID mJourneyId;
+    std::unique_ptr<JourneyID> mJourneyId;
 
 public:
 
@@ -2934,7 +2989,7 @@ private:
     error readAllNodeMetadata(JSON& j, map<handle, SetElement::NodeMetadata>& nodes);
     error readSingleNodeMetadata(JSON& j, SetElement::NodeMetadata& node);
     bool decryptNodeMetadata(SetElement::NodeMetadata& nodeMeta, const string& encryptionKey);
-    error readExportedSet(JSON& j, Set& s, pair<bool, m_off_t>& exportRemoved);
+    error readExportedSet(JSON& j, Set& s);
     error readSetsPublicHandles(JSON& j, map<handle, Set>& sets);
     error readSetPublicHandle(JSON& j, map<handle, Set>& sets);
     void fixSetElementWithWrongKey(const Set& set);
@@ -2991,7 +3046,7 @@ private:
      * @param attrs The node attribute map to write the serialized password data
      * @param data The attribute map containing password-related information.
      */
-    void preparePasswordNodeData(attr_map& attrs, const AttrMap& data) const;
+    void preparePasswordManagerNodeData(attr_map& attrs, const AttrMap& data) const;
 
     /**
      * @brief Checks preconditions for node rename operations on the given node.
@@ -3067,6 +3122,13 @@ public:
 
     // Password Manager
     static const char* const NODE_ATTR_PASSWORD_MANAGER;
+    static constexpr std::string_view PWM_ATTR_NODE_TYPE{"t"};
+    static constexpr std::string_view PWM_ATTR_NODE_TYPE_CREDIT_CARD{"c"};
+    static constexpr std::string_view PWM_ATTR_CREDIT_CARD_NUMBER{"nu"};
+    static constexpr std::string_view PWM_ATTR_CREDIT_NOTES{"n"};
+    static constexpr std::string_view PWM_ATTR_CREDIT_CARD_HOLDER{"u"};
+    static constexpr std::string_view PWM_ATTR_CREDIT_CVV{"cvv"};
+    static constexpr std::string_view PWM_ATTR_CREDIT_EXP_DATE{"exp"};
     static constexpr std::string_view PWM_ATTR_PASSWORD_NOTES{"n"};
     static constexpr std::string_view PWM_ATTR_PASSWORD_URL{"url"};
     static constexpr std::string_view PWM_ATTR_PASSWORD_USERNAME{"u"};
@@ -3077,10 +3139,44 @@ public:
     static constexpr std::string_view PWM_ATTR_PASSWORD_TOTP_HASH_ALG{"alg"};
     static constexpr std::string_view PWM_ATTR_PASSWORD_TOTP_NDIGITS{"nd"};
 
+    enum class PwmEntryType
+    {
+        PASSWORD,
+        CREDIT_CARD,
+    };
+
+    /**
+     * @brief This method converts the value in the field PWM_ATTR_NODE_TYPE into a PwmEntryType. If
+     * the value is not expected this method returns nullopt
+     */
+    static std::optional<PwmEntryType> toPwmEntryType(const std::optional<std::string_view>& t)
+    {
+        if (!t) // Password entries have no PWM_ATTR_NODE_TYPE field
+            return PwmEntryType::PASSWORD;
+
+        if (*t == PWM_ATTR_NODE_TYPE_CREDIT_CARD)
+            return PwmEntryType::CREDIT_CARD;
+        return std::nullopt;
+    }
+
+    /**
+     * @brief Checks if the given `data` stores the provided `type` of PWM node
+     * @note `data` must be an AttrMap obtained from reading the NODE_ATTR_PASSWORD_MANAGER node
+     * attribute.
+     */
+    static bool isPwmDataOfType(const AttrMap& data, const PwmEntryType type)
+    {
+        return toPwmEntryType(data.getStringView(MegaClient::PWM_ATTR_NODE_TYPE)) == type;
+    }
+
     NodeHandle getPasswordManagerBase();
-    void createPasswordManagerBase(int rtag, CommandCreatePasswordManagerBase::Completion cbRequest);
-    error createPasswordNode(const char* name, std::unique_ptr<AttrMap> data,
-                             std::shared_ptr<Node> nParent, int rtag);
+    void createPasswordManagerBase(int rtag,
+                                   CommandCreatePasswordManagerBase::Completion cbRequest);
+
+    /** @brief The same as updatePasswordNode but for updating a Credit Card Node */
+    error updateCreditCardNode(const NodeHandle nh,
+                               std::unique_ptr<AttrMap> newData,
+                               CommandSetAttr::Completion&& cb);
 
     /**
      * @brief Updates the password node data stored in the node with the given `nh` with the
@@ -3107,22 +3203,36 @@ public:
     // Data type to handle wrongly formatted password info. Key: info, val: ErrCode
     using BadPasswordData = std::map<std::string, PasswordEntryError>;
 
+    // Validator for data of a new PasswordManagerNode
+    using PasswordDataValidator = std::function<PasswordEntryError(const AttrMap&)>;
+
+    // Check createPasswordEntries
+    error createPasswordEntry(const char* name,
+                              std::unique_ptr<AttrMap> data,
+                              MegaClient::PasswordDataValidator dataValidator,
+                              std::shared_ptr<Node> nParent,
+                              int rtag);
+
     /**
-     * @brief Creates multiple password nodes with a single putnodes call
+     * @brief Creates multiple PasswordManagerNode instances with a single putnodes call
      *
      * @note API_EARGS will be returned if:
-     *     - nParent is not a password node folder
+     *     - nParent is not a PasswordManagerNode folder
      *     - If any of the given values in data is invalid, e.g., the password field is missing
      *
      * @param data A map with the name of the password entry to create as key and the information of
      * the password (AttrMap) as values.
+     * @param dataValidator a std::function to validate the given data before creating a new
+     * PasswordManagerNode. Note: The same validator will apply to all the entries in the data
+     * parameter.
      * @param nParent The parent node that will contain the nodes to be created
      * @param rTag tag parameter for putnodes call
      * @return error code (API_OK if succeeded)
      */
-    error createPasswordNodes(const ValidPasswordData& data,
-                              std::shared_ptr<Node> nParent,
-                              int rTag);
+    error createPasswordEntries(ValidPasswordData&& data,
+                                PasswordDataValidator dataValidator,
+                                std::shared_ptr<Node> nParent,
+                                int rTag);
 
     using ImportPaswordResult = std::tuple<error, MegaClient::BadPasswordData, std::size_t>;
 
@@ -3205,6 +3315,13 @@ public:
     static PasswordEntryError validateNewPasswordNodeData(const AttrMap& data);
 
     /**
+     * @brief validateNewCreditCardNodeData
+     * @param data
+     * @return
+     */
+    static PasswordEntryError validateNewCreditCardNodeData(const AttrMap& data);
+
+    /**
      * @brief Processes the input password entries and splits them into two containers (bad, good).
      *
      * This method is designed to process the input entries from the mResults member of the
@@ -3264,8 +3381,13 @@ public:
 
     void getMyIp(CommandGetMyIP::Cb&& completion);
 
+    void getSubscriptionCancellationDetails(
+        const char* originalTransactionId,
+        unsigned int gatewayId,
+        CommandGetSubscriptionCancellationDetails::CompletionCallback&& completion);
+
     // FUSE client adapter.
-    fuse::ClientAdapter mFuseClientAdapter;
+    common::ClientAdapter mFuseClientAdapter;
 
     // FUSE service.
     fuse::Service mFuseService;

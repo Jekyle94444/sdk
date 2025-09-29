@@ -2,9 +2,9 @@
 
 #include <string>
 
+#include <mega/common/query_forward.h>
+#include <mega/common/scoped_query_forward.h>
 #include <mega/fuse/common/mount_flags.h>
-#include <mega/fuse/common/query_forward.h>
-#include <mega/fuse/common/scoped_query_forward.h>
 
 namespace mega
 {
@@ -17,16 +17,17 @@ struct MountFlags
 
     bool operator!=(const MountFlags& rhs) const;
 
-    static MountFlags deserialize(Query& query);
-    static MountFlags deserialize(ScopedQuery& query);
+    static MountFlags deserialize(common::Query& query);
+    static MountFlags deserialize(common::ScopedQuery& query);
 
-    void serialize(Query& query) const;
-    void serialize(ScopedQuery& query) const;
+    void serialize(common::Query& query) const;
+    void serialize(common::ScopedQuery& query) const;
 
     std::string mName;
     bool mEnableAtStartup = false;
     bool mPersistent = false;
     bool mReadOnly = false;
+    bool mAllowSelfAccess = false; // Only used by test to allow self process to access the mount.
 }; // MountFlags
 
 } // fuse

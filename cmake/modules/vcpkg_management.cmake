@@ -2,9 +2,16 @@ macro(process_vcpkg_libraries overlays_path)
 
     set(VCPKG_TOOLCHAIN_PATH "${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake")
 
+    if (NOT EXISTS ${VCPKG_TOOLCHAIN_PATH})
+        message(FATAL_ERROR "Invalid VCPKG_ROOT path: ${VCPKG_ROOT}")
+    endif()
+
     # Use internal VCPKG tools
     set(VCPKG_BOOTSTRAP_OPTIONS "-disableMetrics")
     foreach(path IN ITEMS ${overlays_path})
+        if(CMAKE_SYSTEM_NAME STREQUAL "iOS" AND EXISTS "${path}/vcpkg_overlay_ports/ios_overlays")
+            list(APPEND VCPKG_OVERLAY_PORTS "${path}/vcpkg_overlay_ports/ios_overlays")
+        endif()
         list(APPEND VCPKG_OVERLAY_PORTS "${path}/vcpkg_overlay_ports")
         list(APPEND VCPKG_OVERLAY_TRIPLETS "${path}/vcpkg_overlay_triplets")
     endforeach()
@@ -53,6 +60,8 @@ macro(process_vcpkg_libraries overlays_path)
         else() # Linux
             if (CMAKE_SYSTEM_PROCESSOR MATCHES "armv7l" OR (NOT CMAKE_SYSTEM_PROCESSOR AND HOST_ARCH MATCHES "armv7l"))
                 set(VCPKG_TARGET_TRIPLET "arm-linux")
+            elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" OR (NOT CMAKE_SYSTEM_PROCESSOR AND HOST_ARCH MATCHES "aarch64|arm64"))
+                set(VCPKG_TARGET_TRIPLET "arm64-linux-mega")
             else()
                 set(VCPKG_TARGET_TRIPLET "x64-linux-mega")
             endif()
@@ -63,7 +72,7 @@ macro(process_vcpkg_libraries overlays_path)
         list(APPEND VCPKG_MANIFEST_FEATURES "use-openssl")
     endif()
 
-    if (USE_MEDIAINFO)
+    if (ENABLE_MEDIA_FILE_METADATA)
         list(APPEND VCPKG_MANIFEST_FEATURES "use-mediainfo")
     endif()
 
@@ -96,6 +105,10 @@ macro(process_vcpkg_libraries overlays_path)
 
     if (ENABLE_SDKLIB_TESTS)
         list(APPEND VCPKG_MANIFEST_FEATURES "sdk-tests")
+    endif()
+
+    if (ENABLE_C_ARES_BACKEND)
+        list(APPEND VCPKG_MANIFEST_FEATURES "c-ares-backend-curl")
     endif()
 
     set(CMAKE_TOOLCHAIN_FILE ${CMAKE_TOOLCHAIN_FILE} ${VCPKG_TOOLCHAIN_PATH})
